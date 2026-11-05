@@ -1,1 +1,0 @@
-# Aptify-Apartment-Management
