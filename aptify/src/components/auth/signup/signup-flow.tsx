@@ -31,7 +31,13 @@ const emptyProperty: PropertyData = {
   unitCount: 12,
 };
 
-export function SignupFlow({ initialRole }: { initialRole: Role }) {
+export function SignupFlow({
+  initialRole,
+  initialCode = "",
+}: {
+  initialRole: Role;
+  initialCode?: string;
+}) {
   const router = useRouter();
   const [step, setStep] = useState<Step>("account");
   const [account, setAccount] = useState<AccountValues | null>(null);
@@ -170,7 +176,12 @@ export function SignupFlow({ initialRole }: { initialRole: Role }) {
           "Report repairs from day one",
         ]}
       >
-        <TenantStep onBack={() => setStep("account")} onJoin={joinUnit} />
+        <TenantStep
+          email={account?.email ?? ""}
+          initialCode={initialCode}
+          onBack={() => setStep("account")}
+          onJoin={joinUnit}
+        />
       </AuthShell>
     );
   }

@@ -75,14 +75,18 @@ function PreviewCard({ p }: { p: InvitePreview }) {
 }
 
 export function TenantStep({
+  email,
+  initialCode = "",
   onBack,
   onJoin,
 }: {
+  email: string;
+  initialCode?: string;
   onBack: () => void;
   // Returns an error message, or null on success.
   onJoin: (code: string) => Promise<string | null>;
 }) {
-  const [code, setCode] = useState("");
+  const [code, setCode] = useState(initialCode.toUpperCase());
   const [preview, setPreview] = useState<InvitePreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
@@ -92,7 +96,10 @@ export function TenantStep({
     setError(null);
     setChecking(true);
     const supabase = createClient();
-    const { data, error: rpcError } = await supabase.rpc("preview_invite", { p_code: code });
+    const { data, error: rpcError } = await supabase.rpc("preview_invite", {
+      p_code: code,
+      p_email: email,
+    });
     setChecking(false);
 
     if (rpcError || !data) {

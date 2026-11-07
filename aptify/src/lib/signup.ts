@@ -72,6 +72,9 @@ export function inviteErrorMessage(raw: string) {
   if (raw.includes("invalid_invite_code")) {
     return "We couldn't find that code. Check it and try again.";
   }
+  if (raw.includes("invite_email_mismatch")) {
+    return "This invite was sent to a different email address. Use the email your landlord invited, or ask for a new code.";
+  }
   if (/invite_(expired|already_used|revoked)/.test(raw)) {
     return "This code has expired or was already used. Ask your landlord for a new one.";
   }

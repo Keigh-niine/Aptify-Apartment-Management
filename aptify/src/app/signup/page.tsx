@@ -7,7 +7,7 @@ export const instant = false;
 export default async function SignupPage({
   searchParams,
 }: {
-  searchParams: Promise<{ role?: string }>;
+  searchParams: Promise<{ role?: string; code?: string }>;
 }) {
   const supabase = await createClient();
   const {
@@ -15,6 +15,11 @@ export default async function SignupPage({
   } = await supabase.auth.getUser();
   if (user) redirect("/dashboard");
 
-  const { role } = await searchParams;
-  return <SignupFlow initialRole={role === "landlord" ? "landlord" : "tenant"} />;
+  const { role, code } = await searchParams;
+  return (
+    <SignupFlow
+      initialRole={role === "landlord" ? "landlord" : "tenant"}
+      initialCode={(code ?? "").slice(0, 20)}
+    />
+  );
 }
