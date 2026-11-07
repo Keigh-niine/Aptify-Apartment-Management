@@ -42,6 +42,8 @@ export default async function DashboardPage() {
     ? await supabase.from("properties").select("id, name").in("id", rentedPropertyIds)
     : { data: [] as { id: string; name: string }[] };
 
+  if ((rentedUnits ?? []).length > 0) redirect("/tenant");
+
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 p-8">
       <div className="flex items-center justify-between">
