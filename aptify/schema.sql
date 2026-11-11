@@ -3,7 +3,7 @@
 --
 -- This is the FINAL version. It already contains everything from the
 -- earlier steps (initial schema, signup flow, landlord overview,
--- units and invites) plus the user_roles view.
+-- units and invites, maintenance) plus the user_roles view.
 -- Run it ONCE on a fresh Supabase project (SQL editor). Do not run it on a
 -- database that already has these tables.
 --
@@ -1034,6 +1034,119 @@ cross join lateral (
     exists (select 1 from properties pr where pr.owner_id = p.id) as is_landlord,
     exists (select 1 from leases l where l.tenant_id = p.id and l.status = 'active') as is_tenant
 ) r;
+
+-- =====================================================================
+-- LANDLORD MAINTENANCE
+-- =====================================================================
+
+-- Everything the Maintenance page needs: technicians + requests with
+-- photos and comments. Resolved requests are limited to the last 90 days.
+create or replace function landlord_maintenance(p_property uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not owns_property(p_property) then raise exception 'not_allowed'; end if;
+
+  return jsonb_build_object(
+    'technicians', coalesce((
+      select jsonb_agg(jsonb_build_object('id', t.id, 'name', t.name, 'specialty', t.specialty)
+                       order by t.name)
+        from technicians t
+       where t.property_id = p_property and t.active
+    ), '[]'::jsonb),
+
+    'requests', coalesce((
+      select jsonb_agg(to_jsonb(r))
+      from (
+        select mr.id, u.label as unit_label, mr.category, mr.urgency, mr.title, mr.description,
+               mr.status, mr.created_at, mr.resolved_at, mr.visit_at,
+               mr.technician_id, tc.name as technician_name,
+               mr.requested_by as requester_id,
+               (pr.first_name || ' ' || pr.last_name) as requester_name,
+               coalesce((select jsonb_agg(ph.storage_path order by ph.created_at)
+                           from maintenance_photos ph where ph.request_id = mr.id), '[]'::jsonb) as photos,
+               coalesce((select jsonb_agg(jsonb_build_object(
+                                  'id', c.id, 'body', c.body, 'created_at', c.created_at,
+                                  'author', case when c.author_id = mr.requested_by
+                                                 then coalesce(pr.first_name || ' ' || pr.last_name, 'Tenant')
+                                                 else 'Landlord' end)
+                                order by c.created_at)
+                           from maintenance_comments c where c.request_id = mr.id), '[]'::jsonb) as comments
+          from maintenance_requests mr
+          join units u on u.id = mr.unit_id
+          left join technicians tc on tc.id = mr.technician_id
+          left join profiles pr on pr.id = mr.requested_by
+         where u.property_id = p_property
+           and (mr.status <> 'resolved'
+                or coalesce(mr.resolved_at, mr.updated_at) > now() - interval '90 days')
+      ) r
+    ), '[]'::jsonb)
+  );
+end $$;
+
+-- "Update status": changes status, technician and visit time together,
+-- records the timeline event, and notifies the tenant.
+create or replace function update_maintenance(
+  p_request    uuid,
+  p_status     maintenance_status,
+  p_technician uuid default null,
+  p_visit_at   timestamptz default null
+) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v        maintenance_requests;
+  v_tech   technicians;
+  v_prop   uuid;
+  v_note   text;
+  v_body   text;
+  v_changed boolean;
+begin
+  select * into v from maintenance_requests where id = p_request for update;
+  if not found or not manages_unit(v.unit_id) then raise exception 'not_allowed'; end if;
+
+  if p_status = 'assigned' and p_technician is null then
+    raise exception 'technician_required';
+  end if;
+
+  if p_technician is not null then
+    select t.* into v_tech
+      from technicians t join units u on u.property_id = t.property_id
+     where t.id = p_technician and u.id = v.unit_id;
+    if not found then raise exception 'invalid_technician'; end if;
+  end if;
+
+  v_changed := v.status is distinct from p_status;
+
+  update maintenance_requests
+     set status        = p_status,
+         technician_id = case when p_status = 'new' then null else p_technician end,
+         visit_at      = case when p_status = 'new' then null else p_visit_at end,
+         resolved_at   = case when p_status = 'resolved' then coalesce(v.resolved_at, now()) else null end
+   where id = p_request;
+
+  -- Timeline entry (the tenant sees these as "Progress")
+  if v_changed or (p_status <> 'new' and p_technician is distinct from v.technician_id) then
+    v_note := case p_status
+                when 'assigned' then 'Assigned to ' || v_tech.name
+                when 'resolved' then 'Resolved'
+                else 'Reopened'
+              end;
+    insert into maintenance_events (request_id, status, actor_id, note)
+    values (p_request, p_status, auth.uid(), v_note);
+  end if;
+
+  -- Tell the tenant when the status changed
+  if v_changed then
+    select property_id into v_prop from units where id = v.unit_id;
+    v_body := v.title || ' was ' ||
+              case p_status
+                when 'assigned' then 'assigned to ' || v_tech.name
+                when 'resolved' then 'resolved'
+                else 'reopened'
+              end || '.';
+    insert into notifications (recipient_id, type, title, body, maintenance_request_id, unit_id, property_id)
+    values (v.requested_by, 'repair_update', 'Repair request updated', v_body, p_request, v.unit_id, v_prop);
+  end if;
+end $$;
 
 -- =====================================================================
 -- STORAGE: repair photos
