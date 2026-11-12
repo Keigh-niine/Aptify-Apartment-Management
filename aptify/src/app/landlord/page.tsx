@@ -91,10 +91,16 @@ function AnnouncementRow({ a }: { a: OverviewAnnouncement }) {
 }
 
 export default async function OverviewPage() {
-  const { supabase, property } = await getLandlordContext();
+  const { supabase, user, property } = await getLandlordContext();
 
   const { data, error } = await supabase.rpc("landlord_overview", { p_property: property.id });
   const month = new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  // Has the landlord added GCash / Maya details yet? (null if the table is missing)
+  const { count: paymentAccounts } = await supabase
+    .from("payment_accounts")
+    .select("id", { count: "exact", head: true })
+    .eq("owner_id", user.id);
 
   if (error || !data) {
     return (
@@ -118,6 +124,23 @@ export default async function OverviewPage() {
           {property.name} · {month}
         </p>
       </div>
+
+      {paymentAccounts === 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-amber-100 p-4">
+          <div className="flex flex-col gap-0.5">
+            <p className="text-sm font-semibold text-amber-800">Add your payment details</p>
+            <p className="text-xs text-amber-800">
+              Tenants need your GCash or Maya number or QR code to pay you online.
+            </p>
+          </div>
+          <Link
+            href="/landlord/settings"
+            className="inline-flex items-center justify-center rounded-[10px] bg-sky-700 px-3.5 py-[7px] text-sm font-semibold text-white transition-colors hover:bg-sky-800"
+          >
+            Go to Settings
+          </Link>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-5 lg:grid-cols-4">
         <Stat

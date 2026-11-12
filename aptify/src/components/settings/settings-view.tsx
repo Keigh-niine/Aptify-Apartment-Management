@@ -2,9 +2,11 @@
 
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import type { PaymentAccountView } from "@/lib/payments";
 import { createClient } from "@/lib/supabase/client";
 import { NotificationsCard, type Prefs } from "./notifications-card";
 import { PasswordCard } from "./password-card";
+import { PaymentCard } from "./payment-card";
 import { ProfileCard } from "./profile-card";
 import { SettingsCard } from "./settings-card";
 
@@ -35,23 +37,34 @@ export function SettingsView({
   email,
   profile,
   prefs,
+  payments,
+  paymentsError,
 }: {
   role: "landlord" | "tenant";
   userId: string;
   email: string;
   profile: { firstName: string; lastName: string; phone: string };
   prefs: Prefs;
+  // Landlords only: their GCash / Maya details
+  payments?: PaymentAccountView[];
+  paymentsError?: string;
 }) {
   return (
-    <div className="grid items-start gap-5 lg:grid-cols-2">
-      <div className="flex flex-col gap-5">
-        <ProfileCard userId={userId} initial={{ ...profile, email }} />
-        <NotificationsCard userId={userId} initial={prefs} role={role} />
+    <div className="flex flex-col gap-5">
+      <div className="grid items-start gap-5 lg:grid-cols-2">
+        <div className="flex flex-col gap-5">
+          <ProfileCard userId={userId} initial={{ ...profile, email }} />
+          <NotificationsCard userId={userId} initial={prefs} role={role} />
+        </div>
+        <div className="flex flex-col gap-5">
+          <PasswordCard email={email} />
+          <AccountCard />
+        </div>
       </div>
-      <div className="flex flex-col gap-5">
-        <PasswordCard email={email} />
-        <AccountCard />
-      </div>
+
+      {role === "landlord" && (
+        <PaymentCard userId={userId} accounts={payments ?? []} loadError={paymentsError} />
+      )}
     </div>
   );
 }

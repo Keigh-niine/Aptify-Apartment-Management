@@ -3,7 +3,7 @@
 --
 -- This is the FINAL version. It already contains everything from the
 -- earlier steps (initial schema, signup flow, landlord overview,
--- units and invites, maintenance) plus the user_roles view.
+-- units and invites, maintenance, payment details) plus the user_roles view.
 -- Run it ONCE on a fresh Supabase project (SQL editor). Do not run it on a
 -- database that already has these tables.
 --
@@ -1149,6 +1149,47 @@ begin
 end $$;
 
 -- =====================================================================
+-- LANDLORD PAYMENT DETAILS (GCash / Maya)
+-- One row per landlord and method. Applies to all their properties.
+-- =====================================================================
+
+create table payment_accounts (
+  id             uuid primary key default gen_random_uuid(),
+  owner_id       uuid not null references profiles(id) on delete cascade,
+  method         payment_method not null check (method in ('gcash', 'maya')),
+  account_name   text not null check (length(trim(account_name)) >= 2),
+  account_number text not null check (account_number ~ '^09[0-9]{9}$'),   -- PH mobile, 11 digits
+  qr_path        text,                                                    -- object path in bucket "payment-qr"
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now(),
+  unique (owner_id, method)
+);
+
+create trigger trg_payment_accounts_updated before update on payment_accounts
+  for each row execute function set_updated_at();
+
+-- Is the logged-in user an active tenant of this landlord?
+create or replace function is_tenant_of_landlord(p_owner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1
+      from leases l
+      join units u      on u.id = l.unit_id
+      join properties p on p.id = u.property_id
+     where p.owner_id = p_owner
+       and l.tenant_id = auth.uid()
+       and l.status = 'active') $$;
+
+alter table payment_accounts enable row level security;
+
+create policy payment_accounts_owner on payment_accounts for all
+  using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+
+-- Tenants can read their own landlord's details (and nobody else's)
+create policy payment_accounts_tenant on payment_accounts for select
+  using (is_tenant_of_landlord(owner_id));
+
+-- =====================================================================
 -- STORAGE: repair photos
 --  Bucket "maintenance-photos" (private). Object path: {request_id}/{filename}
 --  Flow: 1) app uploads the file to Storage  2) app inserts a row into
@@ -1189,3 +1230,27 @@ with check (
 
 create policy "repair photos: uploader delete" on storage.objects for delete to authenticated
 using (bucket_id = 'maintenance-photos' and owner_id = auth.uid()::text);
+
+-- ---------- STORAGE: payment QR images ------------------------------
+-- Bucket "payment-qr" (private). Object path: {landlord_id}/{method}-{timestamp}.{ext}
+-- The landlord manages their own folder. Their active tenants can view it.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('payment-qr', 'payment-qr', false, 2097152,
+        array['image/jpeg', 'image/png', 'image/webp'])
+on conflict (id) do update
+  set public = false,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
+-- First folder of the path is the landlord's id (null if it is not a valid uuid)
+create or replace function qr_owner_id(p_name text) returns uuid
+language sql stable as $$
+  select case when (storage.foldername(p_name))[1] ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              then (storage.foldername(p_name))[1]::uuid end $$;
+
+create policy "payment qr: owner manage" on storage.objects for all to authenticated
+  using (bucket_id = 'payment-qr' and public.qr_owner_id(name) = auth.uid())
+  with check (bucket_id = 'payment-qr' and public.qr_owner_id(name) = auth.uid());
+
+create policy "payment qr: tenant view" on storage.objects for select to authenticated
+  using (bucket_id = 'payment-qr' and public.is_tenant_of_landlord(public.qr_owner_id(name)));
