@@ -3,7 +3,7 @@
 --
 -- This is the FINAL version. It already contains everything from the
 -- earlier steps (initial schema, signup flow, landlord overview,
--- units and invites, maintenance, payment details) plus the user_roles view.
+-- units and invites, maintenance, payment details, account deletion, announcements) plus the user_roles view.
 -- Run it ONCE on a fresh Supabase project (SQL editor). Do not run it on a
 -- database that already has these tables.
 --
@@ -427,6 +427,35 @@ language sql stable security definer set search_path = public as $$
     where (l.tenant_id = p_other and p.owner_id = auth.uid())
        or (l.tenant_id = auth.uid() and p.owner_id = p_other)) $$;
 
+-- Does the logged-in user own the property this announcement belongs to?
+create or replace function owns_announcement(p_announcement uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1
+      from announcements a
+      join properties p on p.id = a.property_id
+     where a.id = p_announcement and p.owner_id = auth.uid()) $$;
+
+-- Can the logged-in tenant see this announcement? (posted, and meant for them)
+create or replace function can_view_announcement(p_announcement uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1
+      from announcements a
+     where a.id = p_announcement
+       and a.status = 'published'
+       and (
+         (a.audience = 'property' and exists (
+            select 1 from units u join leases l on l.unit_id = u.id
+             where u.property_id = a.property_id
+               and l.tenant_id = auth.uid() and l.status = 'active'))
+         or
+         (a.audience = 'units' and exists (
+            select 1 from announcement_units au join leases l on l.unit_id = au.unit_id
+             where au.announcement_id = a.id
+               and l.tenant_id = auth.uid() and l.status = 'active'))
+       )) $$;
+
 -- =====================================================================
 -- ROW LEVEL SECURITY
 -- =====================================================================
@@ -519,14 +548,11 @@ create policy mevents_owner_write on maintenance_events for insert with check (
 
 -- Announcements: tenants see published ones for their property / their unit
 create policy ann_owner on announcements for all using (owns_property(property_id)) with check (owns_property(property_id));
-create policy ann_tenant on announcements for select using (
-  status = 'published' and (
-    (audience = 'property' and exists (select 1 from units u where u.property_id = announcements.property_id and is_unit_tenant(u.id)))
-    or (audience = 'units' and exists (select 1 from announcement_units au where au.announcement_id = announcements.id and is_unit_tenant(au.unit_id)))));
-create policy annunits_owner on announcement_units for all using (
-  exists (select 1 from announcements a where a.id = announcement_id and owns_property(a.property_id)))
-  with check (
-  exists (select 1 from announcements a where a.id = announcement_id and owns_property(a.property_id)));
+create policy ann_tenant on announcements for select
+  using (can_view_announcement(id));
+create policy annunits_owner on announcement_units for all
+  using (owns_announcement(announcement_id))
+  with check (owns_announcement(announcement_id));
 
 -- Notifications: own only. Inserts happen inside security definer functions.
 create policy notif_read   on notifications for select using (recipient_id = auth.uid());
@@ -1190,6 +1216,253 @@ create policy payment_accounts_tenant on payment_accounts for select
   using (is_tenant_of_landlord(owner_id));
 
 -- =====================================================================
+-- DELETE ACCOUNT / REMOVE TENANT (permanent; the app asks for confirmation)
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- Internal helpers (not callable from the app)
+-- ---------------------------------------------------------------------
+
+-- Delete one lease and everything that hangs off it:
+-- receipts -> payments -> bills (+ items) -> the lease (+ terms, charges, invites)
+create or replace function _delete_lease_records(p_lease uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  delete from receipts
+   where payment_id in (select pay.id from payments pay
+                         join bills b on b.id = pay.bill_id
+                        where b.lease_id = p_lease);
+  delete from payments where bill_id in (select id from bills where lease_id = p_lease);
+  delete from bills    where lease_id = p_lease;
+  delete from leases   where id = p_lease;
+end $$;
+
+-- Delete a person completely: what they own, what they rent, and their login.
+create or replace function _purge_user(p_user uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_prop uuid; v_lease uuid;
+begin
+  -- 1) Properties they own, with everything under them
+  for v_prop in select id from properties where owner_id = p_user loop
+    for v_lease in select l.id from leases l join units u on u.id = l.unit_id
+                    where u.property_id = v_prop loop
+      perform _delete_lease_records(v_lease);
+    end loop;
+    delete from receipts   where property_id = v_prop;
+    delete from properties where id = v_prop;   -- units, repair requests, photos, comments,
+                                                -- announcements and technicians go with it
+  end loop;
+
+  -- 2) Leases where they are the tenant
+  for v_lease in select id from leases where tenant_id = p_user loop
+    perform _delete_lease_records(v_lease);
+  end loop;
+
+  -- 3) Anything else they created or touched
+  delete from receipts where payment_id in (select id from payments where payer_id = p_user);
+  delete from payments              where payer_id    = p_user;
+  delete from maintenance_requests  where requested_by = p_user;
+  delete from maintenance_comments  where author_id   = p_user;
+  delete from announcements         where author_id   = p_user;
+  update maintenance_events set actor_id    = null where actor_id    = p_user;
+  update payments           set confirmed_by = null where confirmed_by = p_user;
+
+  -- 4) The login. Profile, preferences, notifications and payment details go with it.
+  delete from auth.users where id = p_user;
+end $$;
+
+revoke execute on function _delete_lease_records(uuid) from public, anon, authenticated;
+revoke execute on function _purge_user(uuid)           from public, anon, authenticated;
+
+-- ---------------------------------------------------------------------
+-- Delete my account (Settings -> Delete account)
+-- ---------------------------------------------------------------------
+create or replace function delete_my_account() returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then raise exception 'not_authenticated'; end if;
+  perform _purge_user(auth.uid());
+end $$;
+
+-- ---------------------------------------------------------------------
+-- Remove tenant (Units and invites): deletes the tenant's account and records.
+--
+-- Safeguard: if the person ALSO owns a property or rents from another landlord,
+-- their account is kept (deleting it would destroy someone else's data). Only
+-- their records with THIS landlord are deleted.
+-- Returns {"account_deleted": true | false}.
+-- ---------------------------------------------------------------------
+create or replace function remove_tenant_and_account(p_lease uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v leases; v_tenant uuid; v_elsewhere boolean; v_lease uuid;
+begin
+  select * into v from leases where id = p_lease for update;
+  if not found or not manages_lease(p_lease) then raise exception 'not_allowed'; end if;
+  if v.status <> 'active' or v.tenant_id is null then raise exception 'lease_not_active'; end if;
+  v_tenant := v.tenant_id;
+
+  v_elsewhere :=
+    exists (select 1 from properties where owner_id = v_tenant)
+    or exists (select 1 from leases l
+                 join units u      on u.id = l.unit_id
+                 join properties p on p.id = u.property_id
+                where l.tenant_id = v_tenant and p.owner_id <> auth.uid());
+
+  if not v_elsewhere then
+    perform _purge_user(v_tenant);
+    return jsonb_build_object('account_deleted', true);
+  end if;
+
+  -- Keep the account. Delete only what belongs to this landlord.
+  for v_lease in select l.id from leases l
+                   join units u      on u.id = l.unit_id
+                   join properties p on p.id = u.property_id
+                  where l.tenant_id = v_tenant and p.owner_id = auth.uid() loop
+    perform _delete_lease_records(v_lease);
+  end loop;
+
+  delete from maintenance_requests mr
+   using units u, properties p
+   where mr.unit_id = u.id and p.id = u.property_id
+     and p.owner_id = auth.uid() and mr.requested_by = v_tenant;
+
+  return jsonb_build_object('account_deleted', false);
+end $$;
+
+-- ---------------------------------------------------------------------
+-- File lists. The app deletes these from Storage BEFORE calling the delete functions.
+-- ---------------------------------------------------------------------
+create or replace function my_file_paths() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if auth.uid() is null then raise exception 'not_authenticated'; end if;
+  return jsonb_build_object(
+    'payment_qr', coalesce((
+      select jsonb_agg(qr_path) from payment_accounts
+       where owner_id = auth.uid() and qr_path is not null), '[]'::jsonb),
+    'maintenance_photos', coalesce((
+      select jsonb_agg(distinct ph.storage_path)
+        from maintenance_photos ph
+        join maintenance_requests mr on mr.id = ph.request_id
+        join units u      on u.id = mr.unit_id
+        join properties p on p.id = u.property_id
+       where mr.requested_by = auth.uid() or p.owner_id = auth.uid()), '[]'::jsonb));
+end $$;
+
+create or replace function tenant_file_paths(p_lease uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v leases;
+begin
+  select * into v from leases where id = p_lease;
+  if not found or not manages_lease(p_lease) then raise exception 'not_allowed'; end if;
+  return jsonb_build_object(
+    'maintenance_photos', coalesce((
+      select jsonb_agg(ph.storage_path)
+        from maintenance_photos ph
+        join maintenance_requests mr on mr.id = ph.request_id
+        join units u      on u.id = mr.unit_id
+        join properties p on p.id = u.property_id
+       where mr.requested_by = v.tenant_id and p.owner_id = auth.uid()), '[]'::jsonb));
+end $$;
+
+-- =====================================================================
+-- ANNOUNCEMENTS
+-- =====================================================================
+
+-- BUG FIX: tenants must be able to see which units an announcement targets,
+-- otherwise "Specific units" announcements are invisible to them.
+create policy annunits_tenant on announcement_units for select
+  using (is_unit_tenant(unit_id));
+
+-- Create or edit an announcement, and (when posting) notify the tenants it targets.
+--   p_id          null = new announcement, otherwise the one being edited
+--   p_audience    'property' (every tenant) or 'units' (only p_unit_ids)
+--   p_publish     true = post it now, false = keep it as a draft
+-- Editing an announcement that is already posted keeps it posted (no new notifications).
+create or replace function save_announcement(
+  p_property     uuid,
+  p_id           uuid,
+  p_title        text,
+  p_body         text,
+  p_audience     announcement_audience,
+  p_unit_ids     uuid[],
+  p_notify_email boolean,
+  p_publish      boolean
+) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  v_title text := trim(coalesce(p_title, ''));
+  v_body  text := trim(coalesce(p_body, ''));
+  v_units uuid[] := coalesce(p_unit_ids, '{}');
+  v_old   announcements;
+  v_id    uuid;
+  v_was_published boolean := false;
+  v_now_published boolean := false;
+begin
+  if not owns_property(p_property) then raise exception 'not_allowed'; end if;
+
+  if v_title = '' or v_body = '' or length(v_title) > 120 or length(v_body) > 2000 then
+    raise exception 'invalid_announcement';
+  end if;
+
+  if p_audience = 'units' then
+    if cardinality(v_units) = 0 then raise exception 'no_units_selected'; end if;
+    if exists (select 1 from unnest(v_units) as uid
+                where not exists (select 1 from units u
+                                   where u.id = uid and u.property_id = p_property)) then
+      raise exception 'invalid_units';
+    end if;
+  else
+    v_units := '{}';
+  end if;
+
+  if p_id is null then
+    insert into announcements (property_id, author_id, title, body, audience, notify_email, status, published_at)
+    values (p_property, auth.uid(), v_title, v_body, p_audience, coalesce(p_notify_email, false),
+            (case when p_publish then 'published' else 'draft' end)::announcement_status,
+            case when p_publish then now() end)
+    returning id into v_id;
+    v_now_published := p_publish;
+  else
+    select * into v_old from announcements where id = p_id and property_id = p_property for update;
+    if not found then raise exception 'not_allowed'; end if;
+
+    v_was_published := v_old.status = 'published';
+    v_now_published := p_publish and not v_was_published;
+
+    update announcements
+       set title        = v_title,
+           body         = v_body,
+           audience     = p_audience,
+           notify_email = coalesce(p_notify_email, false),
+           status       = (case when v_was_published or p_publish then 'published' else 'draft' end)::announcement_status,
+           published_at = case when v_was_published then v_old.published_at
+                               when p_publish then now()
+                               else null end
+     where id = p_id;
+    v_id := p_id;
+  end if;
+
+  delete from announcement_units where announcement_id = v_id;
+  insert into announcement_units (announcement_id, unit_id)
+  select v_id, uid from unnest(v_units) as uid;
+
+  -- Tell the tenants it is for
+  if v_now_published then
+    insert into notifications (recipient_id, type, title, body, property_id, announcement_id)
+    select distinct l.tenant_id, 'announcement'::notification_type, v_title, left(v_body, 140), p_property, v_id
+      from leases l
+      join units u on u.id = l.unit_id
+     where u.property_id = p_property
+       and l.status = 'active'
+       and l.tenant_id is not null
+       and (p_audience = 'property' or u.id = any(v_units));
+  end if;
+
+  return v_id;
+end $$;
+
+-- =====================================================================
 -- STORAGE: repair photos
 --  Bucket "maintenance-photos" (private). Object path: {request_id}/{filename}
 --  Flow: 1) app uploads the file to Storage  2) app inserts a row into
@@ -1254,3 +1527,12 @@ create policy "payment qr: owner manage" on storage.objects for all to authentic
 
 create policy "payment qr: tenant view" on storage.objects for select to authenticated
   using (bucket_id = 'payment-qr' and public.is_tenant_of_landlord(public.qr_owner_id(name)));
+
+-- repair photos: a landlord can delete photos in their own units
+-- A landlord must be able to delete repair photos in their own units
+-- (so a removed tenant's photos can be cleaned up).
+create policy "repair photos: landlord delete" on storage.objects for delete to authenticated
+  using (bucket_id = 'maintenance-photos'
+         and exists (select 1 from public.maintenance_requests r
+                      where r.id = public.photo_request_id(name)
+                        and public.manages_unit(r.unit_id)));
