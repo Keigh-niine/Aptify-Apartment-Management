@@ -7,6 +7,8 @@ import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/client";
 import type { RowKind } from "@/lib/units";
+import { DangerDialog } from "@/components/ui/danger-dialog";
+import { removeStorageFiles, type FilePaths } from "@/lib/account";
 import { ConfirmDialog } from "./confirm-dialog";
 
 type Props = {
@@ -35,6 +37,32 @@ export function RowActions({ kind, unitId, label, tenantName, leaseId, inviteId,
     }
     setDialog(null);
     toast("ok", okMessage);
+    router.refresh();
+  }
+
+  // Remove the tenant and delete their account and records (permanent)
+  async function removeAndDelete() {
+    if (!leaseId) return;
+    setBusy(true);
+    const supabase = createClient();
+
+    // Files first (repair photos), best effort
+    const { data: files } = await supabase.rpc("tenant_file_paths", { p_lease: leaseId });
+    await removeStorageFiles(supabase, files as FilePaths);
+
+    const { data, error } = await supabase.rpc("remove_tenant_and_account", { p_lease: leaseId });
+    setBusy(false);
+    if (error) {
+      toast("err", "Something went wrong. Please try again.");
+      return;
+    }
+    setDialog(null);
+    toast(
+      "ok",
+      data?.account_deleted
+        ? "Tenant removed and their account deleted."
+        : "Tenant removed. Their account was kept because they also use Aptify elsewhere, but all their records with you were deleted."
+    );
     router.refresh();
   }
 
@@ -73,13 +101,19 @@ export function RowActions({ kind, unitId, label, tenantName, leaseId, inviteId,
       )}
 
       {dialog === "remove" && leaseId && (
-        <ConfirmDialog
-          title="Remove this tenant?"
-          body={`${tenantName ?? "This tenant"} will lose access to ${label} and the lease will end today. Bills and payment history are kept.`}
-          confirmLabel="Remove tenant"
+        <DangerDialog
+          title={`Remove and delete ${tenantName ?? "this tenant"}?`}
+          intro={`${tenantName ?? "This tenant"} will be removed from ${label} and their account will be deleted. This can't be undone.`}
+          items={[
+            "Their account and login",
+            "Their lease, bills, payments and receipts",
+            "Their repair requests, photos and comments",
+          ]}
+          note="If this person also owns a property or rents from another landlord, their account is kept and only their records with you are deleted."
+          confirmLabel="Remove and delete"
           busy={busy}
           onCancel={() => setDialog(null)}
-          onConfirm={() => run("remove_tenant", { p_lease: leaseId }, "Tenant removed.")}
+          onConfirm={removeAndDelete}
         />
       )}
     </>

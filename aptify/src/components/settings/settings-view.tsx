@@ -1,35 +1,11 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
 import type { PaymentAccountView } from "@/lib/payments";
-import { createClient } from "@/lib/supabase/client";
+import { AccountCard } from "./account-card";
 import { NotificationsCard, type Prefs } from "./notifications-card";
 import { PasswordCard } from "./password-card";
 import { PaymentCard } from "./payment-card";
 import { ProfileCard } from "./profile-card";
-import { SettingsCard } from "./settings-card";
-
-function AccountCard() {
-  const router = useRouter();
-
-  return (
-    <SettingsCard title="Account" gap="gap-3">
-      <div>
-        <Button
-          variant="outline"
-          onClick={async () => {
-            await createClient().auth.signOut();
-            router.push("/login");
-            router.refresh();
-          }}
-        >
-          Log out
-        </Button>
-      </div>
-    </SettingsCard>
-  );
-}
 
 export function SettingsView({
   role,
@@ -58,7 +34,7 @@ export function SettingsView({
         </div>
         <div className="flex flex-col gap-5">
           <PasswordCard email={email} />
-          <AccountCard />
+          <AccountCard role={role} />
         </div>
       </div>
 
