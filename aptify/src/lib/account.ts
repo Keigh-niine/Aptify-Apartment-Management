@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export type FilePaths = {
   payment_qr?: string[];
   maintenance_photos?: string[];
+  payment_receipts?: string[];
 } | null;
 
 // Deletes the listed files from Storage. Best effort: if a file is already gone
@@ -14,6 +15,9 @@ export async function removeStorageFiles(supabase: SupabaseClient, files: FilePa
   }
   if (files?.maintenance_photos?.length) {
     jobs.push(supabase.storage.from("maintenance-photos").remove(files.maintenance_photos));
+  }
+  if (files?.payment_receipts?.length) {
+    jobs.push(supabase.storage.from("payment-receipts").remove(files.payment_receipts));
   }
   await Promise.allSettled(jobs);
 }
