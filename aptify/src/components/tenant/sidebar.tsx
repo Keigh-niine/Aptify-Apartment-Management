@@ -3,28 +3,39 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
-import { House, LogOut, Megaphone, Receipt, Wrench } from "lucide-react";
+import {
+  LayoutDashboard,
+  LogOut,
+  Megaphone,
+  Receipt,
+  Settings as SettingsIcon,
+  Wrench,
+} from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
 const nav = [
-  { href: "/tenant", label: "Home", icon: House, exact: true },
+  { href: "/tenant", label: "Home", icon: LayoutDashboard, exact: true },
   { href: "/tenant/payments", label: "Payments", icon: Receipt },
   { href: "/tenant/maintenance", label: "Maintenance", icon: Wrench },
   { href: "/tenant/announcements", label: "Announcements", icon: Megaphone },
+  { href: "/tenant/settings", label: "Settings", icon: SettingsIcon },
 ];
 
-export function TenantSidebar({
+export function Sidebar({
   initials,
   firstName,
-  propertyName,
+  unitLabel,
 }: {
   initials: string;
   firstName: string;
-  propertyName: string;
+  unitLabel: string;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
+
+  // Labels fade out right away when collapsing, and fade in a beat after the
+  // width has started growing when expanding. On phones the sidebar stays narrow.
   const label = `whitespace-nowrap transition-opacity duration-200 motion-reduce:transition-none max-md:opacity-0 ${
     collapsed ? "opacity-0" : "opacity-100 delay-100"
   }`;
@@ -41,9 +52,10 @@ export function TenantSidebar({
         collapsed ? "w-[77px]" : "w-[241px] max-md:w-[77px]"
       }`}
     >
+      {/* Clicking the logo collapses or expands the sidebar */}
       <button
         type="button"
-        onClick={() => setCollapsed((value) => !value)}
+        onClick={() => setCollapsed((c) => !c)}
         aria-expanded={!collapsed}
         aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -95,7 +107,7 @@ export function TenantSidebar({
         </span>
         <div className={`flex min-w-0 flex-col ${label}`}>
           <p className="max-w-[140px] truncate text-sm font-semibold text-slate-900">{firstName}</p>
-          <p className="max-w-[140px] truncate text-xs text-slate-500">{propertyName}</p>
+          <p className="max-w-[140px] truncate text-xs text-slate-500">{unitLabel}</p>
         </div>
       </div>
     </aside>

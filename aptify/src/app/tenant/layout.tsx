@@ -1,22 +1,24 @@
-import { TenantSidebar } from "@/components/tenant/sidebar";
+import { Sidebar } from "@/components/tenant/sidebar";
+import { ToastProvider } from "@/components/toast";
 import { getTenantContext } from "@/lib/tenant";
 
 export const instant = false;
 
 export default async function TenantLayout({ children }: { children: React.ReactNode }) {
-  const { profile, propertyName, unitLabel } = await getTenantContext();
+  const { profile, overview } = await getTenantContext();
   const initials =
     `${profile?.first_name?.[0] ?? ""}${profile?.last_name?.[0] ?? ""}`.toUpperCase() || "TE";
-  const homeName = unitLabel ? `${unitLabel} · ${propertyName}` : propertyName;
 
   return (
-    <div className="flex min-h-screen bg-slate-100">
-      <TenantSidebar
-        initials={initials}
-        firstName={profile?.first_name ?? "Tenant"}
-        propertyName={homeName}
-      />
-      <main className="min-w-0 flex-1 p-6 lg:p-10">{children}</main>
-    </div>
+    <ToastProvider>
+      <div className="flex min-h-screen bg-slate-100">
+        <Sidebar
+          initials={initials}
+          firstName={profile?.first_name ?? "Tenant"}
+          unitLabel={overview?.has_lease ? overview.unit_label : "No unit yet"}
+        />
+        <main className="min-w-0 flex-1 p-6 lg:p-10">{children}</main>
+      </div>
+    </ToastProvider>
   );
 }

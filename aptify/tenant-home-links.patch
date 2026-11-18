@@ -1,0 +1,22 @@
+--- a/src/app/tenant/page.tsx
++++ b/src/app/tenant/page.tsx
+@@ -120,8 +120,8 @@
+         {overdue ? "Was due" : "Due"} {dueDate(bill.due_date)}
+       </p>
+       <div className="flex flex-wrap gap-2.5">
+-        <SiteButton href="/tenant/payments">Pay online</SiteButton>
+-        <SiteButton href="/tenant/payments" variant="outline">
++        <SiteButton href={`/tenant/payments/pay?bill=${bill.bill_id}&method=online`}>Pay online</SiteButton>
++        <SiteButton href={`/tenant/payments/pay?bill=${bill.bill_id}&method=cash`} variant="outline">
+           Pay with cash
+         </SiteButton>
+       </div>
+@@ -222,7 +222,7 @@
+         <Card
+           title="Maintenance requests"
+           action={
+-            <SiteButton href="/tenant/maintenance">Request repair</SiteButton>
++            <SiteButton href="/tenant/maintenance/new">Request repair</SiteButton>
+           }
+         >
+           {o.requests.length === 0 && (
