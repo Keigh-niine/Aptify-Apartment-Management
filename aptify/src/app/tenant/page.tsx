@@ -1,7 +1,16 @@
 import Link from "next/link";
 import { ArrowRight, Wrench } from "lucide-react";
+import { createClient } from "@/lib/supabase/server";
+import { ago } from "@/lib/time";
 
 export const instant = false;
+
+type TenantAnnouncement = {
+  id: string;
+  title: string;
+  body: string;
+  published_at: string;
+};
 
 function PlaceholderPanel({
   title,
@@ -23,7 +32,15 @@ function PlaceholderPanel({
   );
 }
 
-export default function TenantHomePage() {
+export default async function TenantHomePage() {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("announcements")
+    .select("id, title, body, published_at")
+    .eq("status", "published")
+    .order("published_at", { ascending: false })
+    .limit(3);
+  const announcements = (data ?? []) as TenantAnnouncement[];
   const month = new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" });
 
   return (
@@ -54,10 +71,9 @@ export default function TenantHomePage() {
             </Link>
           }
         />
-        <PlaceholderPanel
-          title="Announcements"
-          message="Announcements from your landlord will appear here."
-          action={
+        <section className="flex min-h-40 flex-col rounded-2xl border border-slate-200 bg-white p-6">
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-lg font-bold text-slate-900">Announcements</h2>
             <Link
               href="/tenant/announcements"
               aria-label="View announcements"
@@ -66,8 +82,41 @@ export default function TenantHomePage() {
             >
               <ArrowRight className="size-5" aria-hidden />
             </Link>
-          }
-        />
+          </div>
+          {error ? (
+            <p className="mt-4 text-sm text-red-700">Couldn&apos;t load announcements.</p>
+          ) : announcements.length === 0 ? (
+            <p className="mt-4 text-sm text-slate-500">
+              Announcements from your landlord will appear here.
+            </p>
+          ) : (
+            <ul className="mt-3 flex flex-col">
+              {announcements.map((announcement) => (
+                <li
+                  key={announcement.id}
+                  className="border-t border-slate-100 py-3 first:border-t-0"
+                >
+                  <div>
+                    <span className="flex items-center justify-between gap-3">
+                      <span className="truncate text-sm font-semibold text-slate-900">
+                        {announcement.title}
+                      </span>
+                      <time
+                        dateTime={announcement.published_at}
+                        className="shrink-0 text-xs text-slate-500"
+                      >
+                        {ago(announcement.published_at)}
+                      </time>
+                    </span>
+                    <span className="mt-1 line-clamp-2 text-sm text-slate-500">
+                      {announcement.body}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       </div>
     </div>
   );
