@@ -11,9 +11,12 @@ export function SignOutButton() {
     <Button
       variant="outline"
       onClick={async () => {
-        await createClient().auth.signOut();
-        router.push("/");
-        router.refresh();
+        try {
+          await createClient().auth.signOut({ scope: "local" });
+        } finally {
+          router.replace("/");
+          router.refresh();
+        }
       }}
     >
       Log out

@@ -43,9 +43,12 @@ export function Sidebar({
   }`;
 
   async function logOut() {
-    await createClient().auth.signOut();
-    router.push("/login");
-    router.refresh();
+    try {
+      await createClient().auth.signOut({ scope: "local" });
+    } finally {
+      router.replace("/login");
+      router.refresh();
+    }
   }
 
   return (
