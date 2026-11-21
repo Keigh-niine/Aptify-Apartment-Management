@@ -17,25 +17,30 @@ export function LoginForm() {
     setError(null);
     setLoading(true);
 
-    const form = new FormData(e.currentTarget);
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithPassword({
-      email: String(form.get("email")).trim(),
-      password: String(form.get("password")),
-    });
+    try {
+      const form = new FormData(e.currentTarget);
+      const supabase = createClient();
+      const { error } = await supabase.auth.signInWithPassword({
+        email: String(form.get("email")).trim(),
+        password: String(form.get("password")),
+      });
 
-    if (error) {
-      setError(
-        error.code === "invalid_credentials"
-          ? "Incorrect email or password. Try again."
-          : "Something went wrong. Please try again."
-      );
+      if (error) {
+        setError(
+          error.code === "invalid_credentials"
+            ? "Incorrect email or password. Try again."
+            : "Something went wrong. Please try again."
+        );
+        return;
+      }
+
+      router.replace("/dashboard");
+      router.refresh();
+    } catch {
+      setError("Something went wrong. Please try again.");
+    } finally {
       setLoading(false);
-      return;
     }
-
-    router.push("/dashboard");
-    router.refresh();
   }
 
   return (

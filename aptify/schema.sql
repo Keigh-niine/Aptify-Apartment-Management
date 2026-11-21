@@ -3,7 +3,7 @@
 --
 -- This is the FINAL version. It already contains everything from the
 -- earlier steps (initial schema, signup flow, landlord overview,
--- units and invites, maintenance, payment details, account deletion, announcements) plus the user_roles view.
+-- units and invites, maintenance, payment details, account deletion, announcements, rent ledger, receipt images, tenant home, announcements, repair requests and payments) plus the user_roles view.
 -- Run it ONCE on a fresh Supabase project (SQL editor). Do not run it on a
 -- database that already has these tables.
 --
@@ -227,6 +227,7 @@ create table payments (
   planned_date       date,                    -- cash notice: when tenant plans to pay
   received_on        date,                    -- when money actually arrived
   reference_no       text,                    -- GCash / Maya ref
+  receipt_path       text,                    -- screenshot of the GCash/Maya receipt (bucket payment-receipts)
   note               text,
   confirmed_by       uuid references profiles(id),
   confirmed_at       timestamptz,
@@ -456,6 +457,27 @@ language sql stable security definer set search_path = public as $$
                and l.tenant_id = auth.uid() and l.status = 'active'))
        )) $$;
 
+-- Is the logged-in user the landlord of this tenant?
+create or replace function is_landlord_of_tenant(p_tenant uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1
+      from leases l
+      join units u      on u.id = l.unit_id
+      join properties p on p.id = u.property_id
+     where l.tenant_id = p_tenant and p.owner_id = auth.uid()) $$;
+
+-- Bill helpers: what is left to pay, and is a payment already waiting?
+create or replace function bill_balance(p_bill uuid) returns numeric
+language sql stable security definer set search_path = public as $$
+  select coalesce((select sum(amount) from bill_items where bill_id = p_bill), 0)
+       - coalesce((select discount from bills where id = p_bill), 0)
+       - coalesce((select sum(amount) from payments where bill_id = p_bill and status = 'confirmed'), 0) $$;
+
+create or replace function bill_has_pending(p_bill uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from payments where bill_id = p_bill and status = 'pending') $$;
+
 -- =====================================================================
 -- ROW LEVEL SECURITY
 -- =====================================================================
@@ -513,8 +535,15 @@ create policy items_tenant on bill_items for select using (is_bill_tenant(bill_i
 -- Payments: tenants can read theirs and file a pending cash notice only
 create policy payments_owner  on payments for all using (manages_bill(bill_id)) with check (manages_bill(bill_id));
 create policy payments_tenant_read on payments for select using (is_bill_tenant(bill_id));
-create policy payments_tenant_notice on payments for insert with check (
-  payer_id = auth.uid() and method = 'cash' and status = 'pending' and is_bill_tenant(bill_id));
+create policy payments_tenant_submit on payments for insert with check (
+  payer_id = auth.uid()
+  and status = 'pending'
+  and confirmed_by is null and confirmed_at is null
+  and is_bill_tenant(bill_id)
+  and not bill_has_pending(bill_id)
+  and amount <= bill_balance(bill_id) + 0.005
+  and (method = 'cash' or (method in ('gcash', 'maya') and receipt_path is not null))
+);
 
 create policy counters_owner on receipt_counters for select using (owns_property(property_id));
 create policy receipts_owner  on receipts for select using (owns_property(property_id));
@@ -526,7 +555,13 @@ create policy tech_owner on technicians for all using (owns_property(property_id
 create policy mreq_owner on maintenance_requests for all using (manages_unit(unit_id)) with check (manages_unit(unit_id));
 create policy mreq_tenant_read   on maintenance_requests for select using (is_unit_tenant(unit_id));
 create policy mreq_tenant_insert on maintenance_requests for insert with check (
-  requested_by = auth.uid() and is_unit_tenant(unit_id));
+  requested_by = auth.uid()
+  and is_unit_tenant(unit_id)
+  and status = 'new'
+  and technician_id is null
+  and visit_at is null
+  and resolved_at is null
+);
 
 create policy mphotos_access on maintenance_photos for all using (
   exists (select 1 from maintenance_requests r where r.id = request_id
@@ -871,12 +906,21 @@ end $$;
 create or replace function notify_cash_notice() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
-  if new.method = 'cash' and new.status = 'pending' then
+  if new.status = 'pending' then
     insert into notifications (recipient_id, type, title, body, payment_id, bill_id, unit_id, property_id)
-    select p.owner_id, 'cash_notice', 'Cash payment notice',
-           pr.first_name || ' says PHP ' || new.amount || ' in cash is ready.', new.id, new.bill_id, u.id, p.id
-      from bills b join leases l on l.id = b.lease_id join units u on u.id = l.unit_id
-      join properties p on p.id = u.property_id join profiles pr on pr.id = new.payer_id
+    select p.owner_id, 'cash_notice',
+           case when new.method = 'cash' then 'Cash payment notice' else 'Payment receipt received' end,
+           pr.first_name || case
+             when new.method = 'cash' then ' says PHP ' || new.amount || ' in cash is ready.'
+             else ' sent PHP ' || new.amount || ' by ' ||
+                  (case new.method when 'gcash' then 'GCash' else 'Maya' end) || '. Review the receipt.'
+           end,
+           new.id, new.bill_id, u.id, p.id
+      from bills b
+      join leases l     on l.id = b.lease_id
+      join units u      on u.id = l.unit_id
+      join properties p on p.id = u.property_id
+      join profiles pr  on pr.id = new.payer_id
      where b.id = new.bill_id;
   end if;
   return new;
@@ -1346,7 +1390,16 @@ begin
         join maintenance_requests mr on mr.id = ph.request_id
         join units u      on u.id = mr.unit_id
         join properties p on p.id = u.property_id
-       where mr.requested_by = auth.uid() or p.owner_id = auth.uid()), '[]'::jsonb));
+       where mr.requested_by = auth.uid() or p.owner_id = auth.uid()), '[]'::jsonb),
+    'payment_receipts', coalesce((
+      select jsonb_agg(distinct pay.receipt_path)
+        from payments pay
+        join bills b      on b.id = pay.bill_id
+        join leases l     on l.id = b.lease_id
+        join units u      on u.id = l.unit_id
+        join properties p on p.id = u.property_id
+       where pay.receipt_path is not null
+         and (pay.payer_id = auth.uid() or p.owner_id = auth.uid())), '[]'::jsonb));
 end $$;
 
 create or replace function tenant_file_paths(p_lease uuid) returns jsonb
@@ -1362,7 +1415,16 @@ begin
         join maintenance_requests mr on mr.id = ph.request_id
         join units u      on u.id = mr.unit_id
         join properties p on p.id = u.property_id
-       where mr.requested_by = v.tenant_id and p.owner_id = auth.uid()), '[]'::jsonb));
+       where mr.requested_by = v.tenant_id and p.owner_id = auth.uid()), '[]'::jsonb),
+    'payment_receipts', coalesce((
+      select jsonb_agg(pay.receipt_path)
+        from payments pay
+        join bills b      on b.id = pay.bill_id
+        join leases l     on l.id = b.lease_id
+        join units u      on u.id = l.unit_id
+        join properties p on p.id = u.property_id
+       where pay.payer_id = v.tenant_id and pay.receipt_path is not null
+         and p.owner_id = auth.uid()), '[]'::jsonb));
 end $$;
 
 -- =====================================================================
@@ -1463,6 +1525,413 @@ begin
 end $$;
 
 -- =====================================================================
+-- RENT LEDGER
+-- Everything the Rent ledger page needs for one month (default: this month)
+-- =====================================================================
+
+create or replace function landlord_ledger(p_property uuid, p_month date default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_period  date := date_trunc('month', coalesce(p_month, current_date))::date;
+  v_year    int  := extract(year from now())::int;
+  v_total   numeric;
+  v_paid    numeric;
+  v_pending int;
+  v_repairs int;
+  v_next    int;
+  v_rows    jsonb;
+begin
+  if not owns_property(p_property) then raise exception 'not_allowed'; end if;
+
+  select coalesce(jsonb_agg(to_jsonb(r)), '[]'::jsonb) into v_rows
+  from (
+    select b.id as bill_id, b.bill_type, b.billing_period, b.due_date,
+           (pr.first_name || ' ' || pr.last_name) as tenant_name,
+           u.label as unit_label,
+           (it.total - b.discount)            as total_due,
+           py.paid,
+           (it.total - b.discount - py.paid)  as balance,
+           case when pend.id is not null                                  then 'pending'
+                when it.total > 0 and it.total - b.discount - py.paid <= 0 then 'paid'
+                when b.due_date < current_date                            then 'overdue'
+                when py.paid > 0                                          then 'partial'
+                else 'unpaid' end as status,
+           coalesce(pend.method::text, lp.method::text) as method,
+           case when pend.id is not null then pend.amount else it.total - b.discount end as amount,
+           case when pend.id is not null then jsonb_build_object(
+                  'payment_id',   pend.id,
+                  'amount',       pend.amount,
+                  'method',       pend.method,
+                  'reference_no', pend.reference_no,
+                  'note',         pend.note,
+                  'planned_date', pend.planned_date,
+                  'receipt_path', pend.receipt_path,
+                  'created_at',   pend.created_at) end as pending
+      from bills b
+      join leases l     on l.id = b.lease_id
+      join units u      on u.id = l.unit_id
+      join profiles pr  on pr.id = l.tenant_id
+      cross join lateral (select coalesce(sum(amount), 0) as total
+                            from bill_items where bill_id = b.id) it
+      cross join lateral (select coalesce(sum(amount), 0) as paid
+                            from payments where bill_id = b.id and status = 'confirmed') py
+      left join lateral (select * from payments
+                          where bill_id = b.id and status = 'pending'
+                          order by created_at desc limit 1) pend on true
+      left join lateral (select method from payments
+                          where bill_id = b.id and status = 'confirmed'
+                          order by confirmed_at desc limit 1) lp on true
+     where u.property_id = p_property
+       and l.status = 'active'
+       and b.billing_period = v_period
+  ) r;
+
+  -- Rent received = confirmed / billed, monthly bills only
+  with m as (
+    select (select coalesce(sum(amount), 0) from bill_items where bill_id = bl.id) - bl.discount as total,
+           (select coalesce(sum(amount), 0) from payments where bill_id = bl.id and status = 'confirmed') as paid
+      from bills bl
+      join leases l on l.id = bl.lease_id
+      join units u  on u.id = l.unit_id
+     where u.property_id = p_property and l.status = 'active'
+       and bl.bill_type = 'monthly' and bl.billing_period = v_period)
+  select sum(total), sum(least(paid, total)) into v_total, v_paid from m;
+
+  select count(*) into v_pending
+    from payments pay
+    join bills bl on bl.id = pay.bill_id
+    join leases l on l.id = bl.lease_id
+    join units u  on u.id = l.unit_id
+   where u.property_id = p_property and pay.status = 'pending';
+
+  select count(*) into v_repairs
+    from maintenance_requests mr join units u on u.id = mr.unit_id
+   where u.property_id = p_property and mr.status in ('new', 'assigned');
+
+  select coalesce((select last_number from receipt_counters
+                    where property_id = p_property and year = v_year), 0) + 1 into v_next;
+
+  return jsonb_build_object(
+    'month', v_period,
+    'rows', v_rows,
+    'rent_received_pct', case when coalesce(v_total, 0) > 0 then round(100 * v_paid / v_total) end,
+    'pending_count', v_pending,
+    'open_repairs', v_repairs,
+    'next_receipt_year', v_year,
+    'next_receipt_number', v_next);
+end $$;
+
+-- =====================================================================
+-- TENANT HOME SCREEN ("My Home"): only the logged-in tenant's own data
+-- =====================================================================
+
+create or replace function tenant_overview() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_lease leases;
+  v_prop  uuid;
+begin
+  if auth.uid() is null then raise exception 'not_authenticated'; end if;
+
+  select l.* into v_lease
+    from leases l
+   where l.tenant_id = auth.uid() and l.status = 'active'
+   order by l.created_at desc limit 1;
+
+  if not found then return jsonb_build_object('has_lease', false); end if;
+
+  select u.property_id into v_prop from units u where u.id = v_lease.unit_id;
+
+  return jsonb_build_object(
+    'has_lease', true,
+    'unit_label', (select label from units where id = v_lease.unit_id),
+    'property_name', (select name from properties where id = v_prop),
+
+    -- The bill that is due next (earliest due date with something left to pay)
+    'current_bill', (
+      select to_jsonb(x) from (
+        select b.id as bill_id, b.bill_type, b.billing_period, b.due_date,
+               (it.total - b.discount)           as total_due,
+               py.paid,
+               (it.total - b.discount - py.paid) as balance,
+               case when pend.id is not null then jsonb_build_object(
+                      'payment_id', pend.id, 'amount', pend.amount,
+                      'method', pend.method, 'created_at', pend.created_at) end as pending,
+               case when pend.id is null then (
+                      select jsonb_build_object(
+                               'reason', rj.rejection_reason, 'message', rj.rejection_message,
+                               'amount', rj.amount, 'method', rj.method)
+                        from payments rj
+                       where rj.bill_id = b.id and rj.status = 'rejected'
+                       order by rj.updated_at desc limit 1) end as rejected
+          from bills b
+          cross join lateral (select coalesce(sum(amount), 0) as total
+                                from bill_items where bill_id = b.id) it
+          cross join lateral (select coalesce(sum(amount), 0) as paid
+                                from payments where bill_id = b.id and status = 'confirmed') py
+          left join lateral (select * from payments
+                              where bill_id = b.id and status = 'pending'
+                              order by created_at desc limit 1) pend on true
+         where b.lease_id = v_lease.id
+           and (it.total - b.discount - py.paid) > 0
+         order by b.due_date asc
+         limit 1
+      ) x),
+
+    'history', coalesce((
+      select jsonb_agg(to_jsonb(h) order by h.created_at desc)
+        from (select pay.id, b.billing_period, b.bill_type, pay.amount, pay.method,
+                     pay.status, pay.created_at
+                from payments pay
+                join bills b on b.id = pay.bill_id
+               where b.lease_id = v_lease.id
+               order by pay.created_at desc
+               limit 4) h), '[]'::jsonb),
+
+    'requests', coalesce((
+      select jsonb_agg(to_jsonb(q) order by q.created_at desc)
+        from (select mr.id, mr.title, mr.category, mr.urgency, mr.status, mr.created_at
+                from maintenance_requests mr
+               where mr.unit_id = v_lease.unit_id and mr.requested_by = auth.uid()
+               order by mr.created_at desc
+               limit 3) q), '[]'::jsonb),
+
+    'announcements', coalesce((
+      select jsonb_agg(to_jsonb(a) order by a.published_at desc)
+        from (select an.id, an.title, an.published_at
+                from announcements an
+               where an.property_id = v_prop
+                 and an.status = 'published'
+                 and (an.audience = 'property'
+                      or exists (select 1 from announcement_units au
+                                  where au.announcement_id = an.id
+                                    and au.unit_id = v_lease.unit_id))
+               order by an.published_at desc
+               limit 3) a), '[]'::jsonb)
+  );
+end $$;
+
+-- Tenant Announcements page: what is meant for this tenant, with an unread flag
+create or replace function tenant_announcements() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_lease leases;
+  v_prop  uuid;
+begin
+  if auth.uid() is null then raise exception 'not_authenticated'; end if;
+
+  select l.* into v_lease
+    from leases l
+   where l.tenant_id = auth.uid() and l.status = 'active'
+   order by l.created_at desc limit 1;
+  if not found then return '[]'::jsonb; end if;
+
+  select u.property_id into v_prop from units u where u.id = v_lease.unit_id;
+
+  return coalesce((
+    select jsonb_agg(to_jsonb(a) order by a.published_at desc)
+      from (
+        select an.id, an.title, an.body, an.published_at,
+               exists (select 1 from notifications n
+                        where n.recipient_id = auth.uid()
+                          and n.announcement_id = an.id
+                          and n.read_at is null) as unread
+          from announcements an
+         where an.property_id = v_prop
+           and an.status = 'published'
+           and (an.audience = 'property'
+                or exists (select 1 from announcement_units au
+                            where au.announcement_id = an.id
+                              and au.unit_id = v_lease.unit_id))
+         order by an.published_at desc
+         limit 100
+      ) a), '[]'::jsonb);
+end $$;
+
+-- Tenant reopens their own resolved repair request
+create or replace function tenant_reopen_request(p_request uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare v maintenance_requests;
+begin
+  select * into v from maintenance_requests where id = p_request for update;
+  if not found or v.requested_by <> auth.uid() or not is_unit_tenant(v.unit_id) then
+    raise exception 'not_allowed';
+  end if;
+  if v.status <> 'resolved' then raise exception 'not_resolved'; end if;
+
+  update maintenance_requests
+     set status = 'new', technician_id = null, visit_at = null, resolved_at = null
+   where id = p_request;
+
+  insert into maintenance_events (request_id, status, actor_id, note)
+  values (p_request, 'new', auth.uid(), 'Reopened');
+
+  insert into notifications (recipient_id, type, title, body, maintenance_request_id, unit_id, property_id)
+  select p.owner_id, 'repair_request', 'Repair request reopened', v.title, p_request, v.unit_id, p.id
+    from units u join properties p on p.id = u.property_id
+   where u.id = v.unit_id;
+end $$;
+
+-- =====================================================================
+-- TENANT PAYMENTS
+-- =====================================================================
+
+-- The Payments page: the bill due next, and the payment history
+create or replace function tenant_payments() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_lease leases; v_prop uuid;
+begin
+  if auth.uid() is null then raise exception 'not_authenticated'; end if;
+
+  select l.* into v_lease from leases l
+   where l.tenant_id = auth.uid() and l.status = 'active'
+   order by l.created_at desc limit 1;
+  if not found then return jsonb_build_object('has_lease', false); end if;
+
+  select u.property_id into v_prop from units u where u.id = v_lease.unit_id;
+
+  return jsonb_build_object(
+    'has_lease', true,
+    'unit_label', (select label from units where id = v_lease.unit_id),
+    'property_name', (select name from properties where id = v_prop),
+
+    'current_bill', (
+      select to_jsonb(x) from (
+        select b.id as bill_id, b.bill_type, b.billing_period, b.due_date,
+               (it.total - b.discount)           as total_due,
+               py.paid,
+               (it.total - b.discount - py.paid) as balance,
+               coalesce((select jsonb_agg(bi.description order by bi.sort_order)
+                           from bill_items bi where bi.bill_id = b.id), '[]'::jsonb) as item_names,
+               case when pend.id is not null then jsonb_build_object(
+                      'payment_id', pend.id, 'amount', pend.amount,
+                      'method', pend.method, 'created_at', pend.created_at) end as pending,
+               case when pend.id is null then (
+                      select jsonb_build_object(
+                               'reason', rj.rejection_reason, 'message', rj.rejection_message,
+                               'amount', rj.amount, 'method', rj.method)
+                        from payments rj
+                       where rj.bill_id = b.id and rj.status = 'rejected'
+                       order by rj.updated_at desc limit 1) end as rejected
+          from bills b
+          cross join lateral (select coalesce(sum(amount), 0) as total
+                                from bill_items where bill_id = b.id) it
+          cross join lateral (select coalesce(sum(amount), 0) as paid
+                                from payments where bill_id = b.id and status = 'confirmed') py
+          left join lateral (select * from payments
+                              where bill_id = b.id and status = 'pending'
+                              order by created_at desc limit 1) pend on true
+         where b.lease_id = v_lease.id and (it.total - b.discount - py.paid) > 0
+         order by b.due_date asc
+         limit 1
+      ) x),
+
+    'history', coalesce((
+      select jsonb_agg(to_jsonb(h) order by h.created_at desc)
+        from (select pay.id, b.billing_period, b.bill_type, pay.amount, pay.method,
+                     pay.status, pay.created_at, rc.receipt_no
+                from payments pay
+                join bills b on b.id = pay.bill_id
+                left join receipts rc on rc.payment_id = pay.id
+               where b.lease_id = v_lease.id
+               order by pay.created_at desc
+               limit 24) h), '[]'::jsonb)
+  );
+end $$;
+
+-- The Pay page: one bill with its items, and the landlord's GCash / Maya details
+--    p_bill null = the bill due next
+create or replace function tenant_pay_info(p_bill uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_lease leases; v_bill uuid; v_prop uuid; v_owner uuid;
+begin
+  if auth.uid() is null then raise exception 'not_authenticated'; end if;
+
+  select l.* into v_lease from leases l
+   where l.tenant_id = auth.uid() and l.status = 'active'
+   order by l.created_at desc limit 1;
+  if not found then raise exception 'no_lease'; end if;
+
+  v_bill := p_bill;
+  if v_bill is null then
+    select b.id into v_bill from bills b
+     where b.lease_id = v_lease.id and bill_balance(b.id) > 0
+     order by b.due_date asc limit 1;
+  end if;
+  if v_bill is null then return jsonb_build_object('has_bill', false); end if;
+
+  if not exists (select 1 from bills where id = v_bill and lease_id = v_lease.id) then
+    raise exception 'not_allowed';
+  end if;
+
+  select u.property_id, p.owner_id into v_prop, v_owner
+    from units u join properties p on p.id = u.property_id
+   where u.id = v_lease.unit_id;
+
+  return jsonb_build_object(
+    'has_bill', true,
+    'unit_label', (select label from units where id = v_lease.unit_id),
+    'property_name', (select name from properties where id = v_prop),
+    'bill', (
+      select jsonb_build_object(
+               'bill_id', b.id, 'bill_type', b.bill_type,
+               'billing_period', b.billing_period, 'due_date', b.due_date,
+               'discount', b.discount,
+               'items', coalesce((select jsonb_agg(jsonb_build_object(
+                                    'description', bi.description, 'amount', bi.amount)
+                                    order by bi.sort_order)
+                                    from bill_items bi where bi.bill_id = b.id), '[]'::jsonb),
+               'total_due', (select coalesce(sum(amount), 0) from bill_items where bill_id = b.id) - b.discount,
+               'paid', (select coalesce(sum(amount), 0) from payments where bill_id = b.id and status = 'confirmed'),
+               'balance', bill_balance(b.id),
+               'has_pending', bill_has_pending(b.id))
+        from bills b where b.id = v_bill),
+    'accounts', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'method', pa.method, 'account_name', pa.account_name,
+               'account_number', pa.account_number, 'qr_path', pa.qr_path)
+               order by pa.method)
+        from payment_accounts pa where pa.owner_id = v_owner), '[]'::jsonb)
+  );
+end $$;
+
+-- An official receipt (only the tenant who paid can read it)
+create or replace function tenant_receipt(p_payment uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v record;
+begin
+  if auth.uid() is null then raise exception 'not_authenticated'; end if;
+
+  select pay.id, pay.amount, pay.method, pay.reference_no, pay.received_on, pay.bill_id,
+         b.billing_period, rc.receipt_no, rc.issued_at, u.label as unit_label, p.name as property_name
+    into v
+    from payments pay
+    join bills b      on b.id = pay.bill_id
+    join receipts rc  on rc.payment_id = pay.id
+    join leases l     on l.id = b.lease_id
+    join units u      on u.id = l.unit_id
+    join properties p on p.id = u.property_id
+   where pay.id = p_payment and pay.payer_id = auth.uid() and pay.status = 'confirmed';
+  if not found then raise exception 'not_allowed'; end if;
+
+  return jsonb_build_object(
+    'receipt_no', v.receipt_no,
+    'issued_at', v.issued_at,
+    'tenant_name', (select first_name || ' ' || last_name from profiles where id = auth.uid()),
+    'unit_label', v.unit_label,
+    'property_name', v.property_name,
+    'date_paid', coalesce(v.received_on, v.issued_at::date),
+    'billing_period', v.billing_period,
+    'method', v.method,
+    'reference_no', v.reference_no,
+    'items', coalesce((select jsonb_agg(jsonb_build_object('description', bi.description, 'amount', bi.amount)
+                                       order by bi.sort_order)
+                         from bill_items bi where bi.bill_id = v.bill_id), '[]'::jsonb),
+    'total_paid', v.amount,
+    'balance', bill_balance(v.bill_id));
+end $$;
+
+-- =====================================================================
 -- STORAGE: repair photos
 --  Bucket "maintenance-photos" (private). Object path: {request_id}/{filename}
 --  Flow: 1) app uploads the file to Storage  2) app inserts a row into
@@ -1536,3 +2005,29 @@ create policy "repair photos: landlord delete" on storage.objects for delete to 
          and exists (select 1 from public.maintenance_requests r
                       where r.id = public.photo_request_id(name)
                         and public.manages_unit(r.unit_id)));
+
+-- ---------- STORAGE: receipt images ---------------------------------
+-- Bucket "payment-receipts" (private). Object path: {tenant_id}/{timestamp}.{ext}
+-- The tenant manages their own folder. Their landlord can view (and clean up) it.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('payment-receipts', 'payment-receipts', false, 5242880,
+        array['image/jpeg', 'image/png', 'image/webp'])
+on conflict (id) do update
+  set public = false,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
+create or replace function receipt_owner_id(p_name text) returns uuid
+language sql stable as $$
+  select case when (storage.foldername(p_name))[1] ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              then (storage.foldername(p_name))[1]::uuid end $$;
+
+create policy "payment receipts: tenant manage" on storage.objects for all to authenticated
+  using (bucket_id = 'payment-receipts' and public.receipt_owner_id(name) = auth.uid())
+  with check (bucket_id = 'payment-receipts' and public.receipt_owner_id(name) = auth.uid());
+
+create policy "payment receipts: landlord view" on storage.objects for select to authenticated
+  using (bucket_id = 'payment-receipts' and public.is_landlord_of_tenant(public.receipt_owner_id(name)));
+
+create policy "payment receipts: landlord delete" on storage.objects for delete to authenticated
+  using (bucket_id = 'payment-receipts' and public.is_landlord_of_tenant(public.receipt_owner_id(name)));
