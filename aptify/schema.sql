@@ -741,6 +741,24 @@ declare v_lease uuid; v_invite uuid; v_code text; v_expires timestamptz;
 begin
   if not manages_unit(p_unit) then raise exception 'not_allowed'; end if;
   if p_monthly_rent is null or p_monthly_rent <= 0 then raise exception 'invalid_rent'; end if;
+
+  -- Clean up revoked invites left by older versions of revoke_invite.
+  update units set listed_rent = null
+   where id = p_unit
+     and exists (
+       select 1 from leases l
+       join unit_invites i on i.lease_id = l.id
+       where l.unit_id = p_unit
+         and l.status = 'pending'
+         and i.revoked_at is not null
+     );
+  delete from leases l
+   using unit_invites i
+   where l.id = i.lease_id
+     and l.unit_id = p_unit
+     and l.status = 'pending'
+     and i.revoked_at is not null;
+
   if exists (select 1 from leases where unit_id = p_unit and status in ('pending', 'active')) then
     raise exception 'unit_not_vacant';
   end if;
@@ -776,8 +794,9 @@ begin
   if not found or not manages_lease(v_inv.lease_id) then raise exception 'not_allowed'; end if;
   if v_inv.redeemed_at is not null then raise exception 'invite_already_used'; end if;
 
-  update unit_invites set revoked_at = coalesce(revoked_at, now()) where id = p_invite;
-  update leases set status = 'ended' where id = v_inv.lease_id and status = 'pending';
+  update units set listed_rent = null
+   where id = (select unit_id from leases where id = v_inv.lease_id);
+  delete from leases where id = v_inv.lease_id and status = 'pending';
 end $$;
 
 -- Remove a tenant. The lease ends today. Bills and payments stay on record.
@@ -792,6 +811,8 @@ begin
   update leases
      set status = 'ended', end_date = greatest(current_date, v_lease.start_date)
    where id = p_lease;
+  update units set listed_rent = null
+   where id = v_lease.unit_id;
 end $$;
 
 -- Everything the Units and invites table needs, one row per unit.
@@ -1272,6 +1293,8 @@ create policy payment_accounts_tenant on payment_accounts for select
 create or replace function _delete_lease_records(p_lease uuid) returns void
 language plpgsql security definer set search_path = public as $$
 begin
+  update units set listed_rent = null
+   where id = (select unit_id from leases where id = p_lease);
   delete from receipts
    where payment_id in (select pay.id from payments pay
                          join bills b on b.id = pay.bill_id
@@ -1526,7 +1549,7 @@ end $$;
 
 -- =====================================================================
 -- RENT LEDGER
--- Everything the Rent ledger page needs for one month (default: this month)
+-- Everything the Rent ledger page needs for one month, plus pending move-in bills.
 -- =====================================================================
 
 create or replace function landlord_ledger(p_property uuid, p_month date default null) returns jsonb
@@ -1545,13 +1568,14 @@ begin
 
   select coalesce(jsonb_agg(to_jsonb(r)), '[]'::jsonb) into v_rows
   from (
-    select b.id as bill_id, b.bill_type, b.billing_period, b.due_date,
+    select l.id as lease_id, b.id as bill_id, b.bill_type, b.billing_period, b.due_date,
            (pr.first_name || ' ' || pr.last_name) as tenant_name,
            u.label as unit_label,
            (it.total - b.discount)            as total_due,
            py.paid,
            (it.total - b.discount - py.paid)  as balance,
-           case when pend.id is not null                                  then 'pending'
+           case when b.id is null                                         then 'unbilled'
+                when pend.id is not null                                  then 'pending'
                 when it.total > 0 and it.total - b.discount - py.paid <= 0 then 'paid'
                 when b.due_date < current_date                            then 'overdue'
                 when py.paid > 0                                          then 'partial'
@@ -1567,10 +1591,14 @@ begin
                   'planned_date', pend.planned_date,
                   'receipt_path', pend.receipt_path,
                   'created_at',   pend.created_at) end as pending
-      from bills b
-      join leases l     on l.id = b.lease_id
+      from leases l
       join units u      on u.id = l.unit_id
       join profiles pr  on pr.id = l.tenant_id
+      left join bills b on b.lease_id = l.id
+       and (b.billing_period = v_period
+            or (b.bill_type = 'move_in' and exists (
+                  select 1 from payments pending_pay
+                   where pending_pay.bill_id = b.id and pending_pay.status = 'pending')))
       cross join lateral (select coalesce(sum(amount), 0) as total
                             from bill_items where bill_id = b.id) it
       cross join lateral (select coalesce(sum(amount), 0) as paid
@@ -1583,7 +1611,6 @@ begin
                           order by confirmed_at desc limit 1) lp on true
      where u.property_id = p_property
        and l.status = 'active'
-       and b.billing_period = v_period
   ) r;
 
   -- Rent received = confirmed / billed, monthly bills only

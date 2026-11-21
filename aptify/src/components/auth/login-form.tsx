@@ -1,14 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/client";
 import { Field } from "./field";
 
 export function LoginForm() {
-  const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -34,8 +32,9 @@ export function LoginForm() {
         return;
       }
 
-      router.replace("/dashboard");
-      router.refresh();
+      // Avoid carrying App Router data across accounts after changing sessions.
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+      window.location.assign("/dashboard");
     } catch {
       setError("Something went wrong. Please try again.");
     } finally {

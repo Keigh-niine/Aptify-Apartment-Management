@@ -11,7 +11,7 @@ import {
   methodLabel,
   monthTitle,
   todayLocal,
-  type LedgerRow,
+  type BillLedgerRow,
 } from "@/lib/ledger";
 import { shortLabel } from "@/lib/signup";
 import { createClient } from "@/lib/supabase/client";
@@ -38,7 +38,7 @@ export function ReviewPaymentDialog({
   row,
   onClose,
 }: {
-  row: LedgerRow;
+  row: BillLedgerRow;
   onClose: () => void;
 }) {
   const router = useRouter();

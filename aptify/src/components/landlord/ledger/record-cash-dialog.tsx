@@ -6,7 +6,7 @@ import { inputClass, Labeled, MoneyInput } from "@/components/landlord/units/ui"
 import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
 import { formatPeso } from "@/lib/format";
-import { monthTitle, receiptNo, todayLocal, type LedgerRow } from "@/lib/ledger";
+import { monthTitle, receiptNo, todayLocal, type BillLedgerRow } from "@/lib/ledger";
 import { shortLabel } from "@/lib/signup";
 import { createClient } from "@/lib/supabase/client";
 import { fmtMoney, parseMoney } from "@/lib/units";
@@ -17,7 +17,7 @@ export function RecordCashDialog({
   nextReceipt,
   onClose,
 }: {
-  rows: LedgerRow[]; // bills that still have a balance and no payment waiting
+  rows: BillLedgerRow[]; // bills that still have a balance and no payment waiting
   nextReceipt: string;
   onClose: () => void;
 }) {

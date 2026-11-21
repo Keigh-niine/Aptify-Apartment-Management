@@ -27,6 +27,10 @@ const radioCard =
 const radioDot =
   "size-4 shrink-0 rounded-full border-[1.5px] border-slate-300 bg-white peer-checked:border-[5px] peer-checked:border-sky-700";
 
+function receiptObjectPath(userId: string, extension: string) {
+  return `${userId}/${Date.now()}.${extension}`;
+}
+
 function Row({ label, value, bold = false }: { label: string; value: string; bold?: boolean }) {
   return (
     <div className="flex items-start justify-between gap-4 py-1 text-sm">
@@ -126,7 +130,13 @@ export function PayForm({
 
     // Online: the receipt screenshot goes to the private bucket first
     if (method === "online" && file) {
-      receiptPath = `${userId}/${Date.now()}.${RECEIPT_TYPES[file.type]}`;
+      const extension = RECEIPT_TYPES[file.type];
+      if (!extension) {
+        toast("err", "Use a PNG, JPG or WebP image.");
+        setBusy(false);
+        return;
+      }
+      receiptPath = receiptObjectPath(userId, extension);
       const up = await supabase.storage
         .from("payment-receipts")
         .upload(receiptPath, file, { contentType: file.type, upsert: false });
