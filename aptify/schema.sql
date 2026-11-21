@@ -1549,7 +1549,7 @@ end $$;
 
 -- =====================================================================
 -- RENT LEDGER
--- Everything the Rent ledger page needs for one month (default: this month)
+-- Everything the Rent ledger page needs for one month, plus pending move-in bills.
 -- =====================================================================
 
 create or replace function landlord_ledger(p_property uuid, p_month date default null) returns jsonb
@@ -1568,13 +1568,14 @@ begin
 
   select coalesce(jsonb_agg(to_jsonb(r)), '[]'::jsonb) into v_rows
   from (
-    select b.id as bill_id, b.bill_type, b.billing_period, b.due_date,
+    select l.id as lease_id, b.id as bill_id, b.bill_type, b.billing_period, b.due_date,
            (pr.first_name || ' ' || pr.last_name) as tenant_name,
            u.label as unit_label,
            (it.total - b.discount)            as total_due,
            py.paid,
            (it.total - b.discount - py.paid)  as balance,
-           case when pend.id is not null                                  then 'pending'
+           case when b.id is null                                         then 'unbilled'
+                when pend.id is not null                                  then 'pending'
                 when it.total > 0 and it.total - b.discount - py.paid <= 0 then 'paid'
                 when b.due_date < current_date                            then 'overdue'
                 when py.paid > 0                                          then 'partial'
@@ -1590,10 +1591,14 @@ begin
                   'planned_date', pend.planned_date,
                   'receipt_path', pend.receipt_path,
                   'created_at',   pend.created_at) end as pending
-      from bills b
-      join leases l     on l.id = b.lease_id
+      from leases l
       join units u      on u.id = l.unit_id
       join profiles pr  on pr.id = l.tenant_id
+      left join bills b on b.lease_id = l.id
+       and (b.billing_period = v_period
+            or (b.bill_type = 'move_in' and exists (
+                  select 1 from payments pending_pay
+                   where pending_pay.bill_id = b.id and pending_pay.status = 'pending')))
       cross join lateral (select coalesce(sum(amount), 0) as total
                             from bill_items where bill_id = b.id) it
       cross join lateral (select coalesce(sum(amount), 0) as paid
@@ -1606,7 +1611,6 @@ begin
                           order by confirmed_at desc limit 1) lp on true
      where u.property_id = p_property
        and l.status = 'active'
-       and b.billing_period = v_period
   ) r;
 
   -- Rent received = confirmed / billed, monthly bills only

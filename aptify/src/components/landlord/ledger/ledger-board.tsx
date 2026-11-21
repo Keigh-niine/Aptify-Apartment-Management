@@ -12,7 +12,7 @@ import {
   statusBadge,
   statusRank,
   type LedgerData,
-  type LedgerRow,
+  type BillLedgerRow,
 } from "@/lib/ledger";
 import { shortLabel } from "@/lib/signup";
 import { RecordCashDialog } from "./record-cash-dialog";
@@ -55,8 +55,14 @@ export function LedgerBoard({
   const shown = rows.filter((r) => tab === "all" || r.status === tab);
 
   // Looked up by id so the dialog always shows fresh data after a refresh
-  const reviewing = rows.find((r) => r.bill_id === reviewingId && r.pending) ?? null;
-  const cashRows = rows.filter((r) => Number(r.balance) > 0 && r.status !== "pending");
+  const reviewing =
+    rows.find(
+      (r): r is BillLedgerRow => r.status !== "unbilled" && r.bill_id === reviewingId && !!r.pending
+    ) ?? null;
+  const cashRows = rows.filter(
+    (r): r is BillLedgerRow =>
+      r.status !== "unbilled" && Number(r.balance) > 0 && r.status !== "pending"
+  );
   const nextReceipt = receiptNo(data.next_receipt_year, data.next_receipt_number);
 
   const tabs: { value: Tab; label: string }[] = [
@@ -110,8 +116,8 @@ export function LedgerBoard({
 
       {rows.length === 0 ? (
         <div className="flex flex-col items-center gap-2 rounded-2xl border border-slate-200 bg-white px-6 py-14 text-center">
-          <p className="text-lg font-bold text-slate-900">No bills for {month.split(" ")[0]} yet</p>
-          <p className="text-sm text-slate-500">Bills appear here once you add a tenant to a unit.</p>
+          <p className="text-lg font-bold text-slate-900">No tenants yet</p>
+          <p className="text-sm text-slate-500">Tenants appear here once they join a unit.</p>
           <div className="mt-2">
             <SiteButton href="/landlord/units/invite">Add tenant</SiteButton>
           </div>
@@ -138,12 +144,12 @@ export function LedgerBoard({
               const b = statusBadge(r);
               return (
                 <div
-                  key={r.bill_id}
+                  key={r.bill_id ?? r.lease_id}
                   className={`${cols} border-b border-slate-100 px-6 py-3.5 text-sm last:border-b-0`}
                 >
                   <span className="font-semibold text-slate-900">
                     {r.tenant_name}
-                    {r.bill_type === "move_in" && (
+                    {r.status !== "unbilled" && r.bill_type === "move_in" && (
                       <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
                         Move-in
                       </span>
@@ -151,10 +157,16 @@ export function LedgerBoard({
                   </span>
                   <span className="text-slate-900">{shortLabel(r.unit_label)}</span>
                   <span className="text-slate-900">
-                    {formatPeso(Number(r.amount)).replace(/\.00$/, "")}
+                    {r.status === "unbilled"
+                      ? "—"
+                      : formatPeso(Number(r.amount)).replace(/\.00$/, "")}
                   </span>
                   <span className="text-slate-900">
-                    {r.method ? (methodLabel[r.method] ?? r.method) : "None yet"}
+                    {r.status === "unbilled"
+                      ? "—"
+                      : r.method
+                        ? (methodLabel[r.method] ?? r.method)
+                        : "None yet"}
                   </span>
                   <span>
                     <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${b.cls}`}>
@@ -184,7 +196,7 @@ export function LedgerBoard({
       )}
 
       {reviewing && (
-        <ReviewPaymentDialog row={reviewing as LedgerRow} onClose={() => setReviewingId(null)} />
+        <ReviewPaymentDialog row={reviewing} onClose={() => setReviewingId(null)} />
       )}
       {recording && (
         <RecordCashDialog

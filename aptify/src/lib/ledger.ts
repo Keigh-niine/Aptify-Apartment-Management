@@ -1,5 +1,6 @@
 export type Method = "cash" | "gcash" | "maya";
-export type LedgerStatus = "paid" | "pending" | "overdue" | "partial" | "unpaid";
+export type BillLedgerStatus = "paid" | "pending" | "overdue" | "partial" | "unpaid";
+export type LedgerStatus = BillLedgerStatus | "unbilled";
 
 export type PendingPayment = {
   payment_id: string;
@@ -13,21 +14,41 @@ export type PendingPayment = {
   receipt_url?: string | null; // a temporary link to the private receipt image
 };
 
-export type LedgerRow = {
+type LedgerTenant = {
+  lease_id: string;
+  tenant_name: string;
+  unit_label: string;
+};
+
+export type BillLedgerRow = LedgerTenant & {
+  status: BillLedgerStatus;
   bill_id: string;
   bill_type: "monthly" | "move_in";
   billing_period: string;
   due_date: string;
-  tenant_name: string;
-  unit_label: string;
   total_due: number;
   paid: number;
   balance: number;
-  status: LedgerStatus;
   method: string | null;
   amount: number;
   pending: PendingPayment | null;
 };
+
+export type UnbilledLedgerRow = LedgerTenant & {
+  status: "unbilled";
+  bill_id: null;
+  bill_type: null;
+  billing_period: null;
+  due_date: null;
+  total_due: null;
+  paid: null;
+  balance: null;
+  method: null;
+  amount: null;
+  pending: null;
+};
+
+export type LedgerRow = BillLedgerRow | UnbilledLedgerRow;
 
 export type LedgerData = {
   month: string;
@@ -54,6 +75,8 @@ export function statusBadge(r: LedgerRow): { text: string; cls: string } {
       return { text: "Overdue", cls: "bg-red-100 text-red-800" };
     case "partial":
       return { text: "Partial", cls: "bg-sky-100 text-sky-700" };
+    case "unbilled":
+      return { text: "Not billed", cls: "bg-slate-100 text-slate-700" };
     default:
       return { text: "Unpaid", cls: "bg-slate-100 text-slate-700" };
   }
@@ -66,6 +89,7 @@ export const statusRank: Record<LedgerStatus, number> = {
   partial: 2,
   unpaid: 3,
   paid: 4,
+  unbilled: 5,
 };
 
 export const receiptNo = (year: number, n: number) =>

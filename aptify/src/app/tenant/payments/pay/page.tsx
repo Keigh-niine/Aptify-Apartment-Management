@@ -1,10 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { connection } from "next/server";
 import { PayForm } from "@/components/tenant/payments/pay-form";
 import { daysUntil, getTenantContext } from "@/lib/tenant";
 import { UUID_RE, type PayAccount, type PayInfo } from "@/lib/tenant-payments";
 
 export const instant = false;
+
+function tomorrowISO() {
+  return new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+}
 
 export default async function PayPage({
   searchParams,
@@ -71,7 +76,8 @@ export default async function PayPage({
         ? "Due today"
         : `Due in ${days} day${days === 1 ? "" : "s"}`;
 
-  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  await connection();
+  const tomorrow = tomorrowISO();
 
   return (
     <div className="flex flex-col gap-6">
