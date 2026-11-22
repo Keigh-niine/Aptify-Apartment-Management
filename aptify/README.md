@@ -22,18 +22,19 @@ This project uses [`next/font`](https://nextjs.org/docs/app/building-your-applic
 
 ## AI maintenance descriptions
 
-Tenant maintenance requests can use NVIDIA NIM to draft a description from the request title,
-category, and urgency. Configure the following server-side environment variables:
+Tenant maintenance requests can use Google Gemini to draft a description from the request title,
+category, and urgency. Create an API key in Google AI Studio and configure it as a server-side
+environment variable:
 
 ```env
-NVIDIA_API_KEY=your-nvidia-api-key
+GEMINI_API_KEY=your-google-ai-studio-api-key
 # Optional:
-NVIDIA_NIM_MODEL=meta/llama-3.1-8b-instruct
-NVIDIA_NIM_API_URL=https://integrate.api.nvidia.com/v1/chat/completions
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
-The API key is only used by the server and must not use a `NEXT_PUBLIC_` prefix. Tenants can review
-and edit the generated description before submitting their request.
+The API key is only used by the server and must not use a `NEXT_PUBLIC_` prefix. Restart the
+development server after changing environment variables. Tenants can review and edit the generated
+description before submitting their request.
 
 ## Learn More
 
