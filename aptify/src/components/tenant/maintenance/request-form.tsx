@@ -27,7 +27,7 @@ const steps = [
 ];
 
 const chip = (on: boolean) =>
-  `cursor-pointer rounded-lg border px-3.5 py-[7px] text-[13px] font-semibold ${
+  `cursor-pointer rounded-lg border px-3.5 py-[7px] text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-60 ${
     on
       ? "border-sky-700 bg-sky-100 text-sky-700"
       : "border-slate-300 bg-white text-slate-500 hover:bg-slate-50"
@@ -47,6 +47,7 @@ export function RequestForm({ unitId, userId }: { unitId: string; userId: string
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [errors, setErrors] = useState<Errors>({});
   const [busy, setBusy] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   function addFiles(list: FileList | null) {
     if (!list) return;
@@ -78,6 +79,43 @@ export function RequestForm({ unitId, userId }: { unitId: string; userId: string
       if (gone) URL.revokeObjectURL(gone.url);
       return list.filter((p) => p.id !== id);
     });
+  }
+
+  async function generateDescription() {
+    const requestTitle = title.trim();
+    if (!requestTitle) return;
+
+    setGenerating(true);
+    try {
+      const response = await fetch("/api/tenant/maintenance/description", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: requestTitle, category, urgency }),
+      });
+      const result: { description?: unknown; error?: unknown } = await response.json();
+
+      if (!response.ok) {
+        toast(
+          "err",
+          typeof result.error === "string"
+            ? result.error
+            : "Couldn't write a description. Please try again."
+        );
+        return;
+      }
+
+      if (typeof result.description !== "string" || !result.description.trim()) {
+        toast("err", "The AI returned an empty description. Please try again.");
+        return;
+      }
+
+      setDescription(result.description.trim());
+      setErrors((current) => ({ ...current, description: undefined }));
+    } catch {
+      toast("err", "Couldn't reach the AI service. Please try again.");
+    } finally {
+      setGenerating(false);
+    }
   }
 
   async function submit(e: React.FormEvent) {
@@ -153,6 +191,7 @@ export function RequestForm({ unitId, userId }: { unitId: string; userId: string
             value={title}
             maxLength={120}
             placeholder="e.g. Leaking kitchen faucet"
+            disabled={generating}
             onChange={(e) => setTitle(e.target.value)}
             className={inputClass(!!errors.title)}
           />
@@ -167,6 +206,7 @@ export function RequestForm({ unitId, userId }: { unitId: string; userId: string
                 key={c.value}
                 type="button"
                 aria-pressed={category === c.value}
+                disabled={generating}
                 onClick={() => setCategory(c.value)}
                 className={chip(category === c.value)}
               >
@@ -184,6 +224,7 @@ export function RequestForm({ unitId, userId }: { unitId: string; userId: string
                 key={u.value}
                 type="button"
                 aria-pressed={urgency === u.value}
+                disabled={generating}
                 onClick={() => setUrgency(u.value)}
                 className={chip(urgency === u.value)}
               >
@@ -193,18 +234,32 @@ export function RequestForm({ unitId, userId }: { unitId: string; userId: string
           </div>
         </div>
 
-        <label className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5">
           <span className="text-[13px] font-medium text-slate-900">Describe the issue</span>
           <textarea
             rows={5}
             value={description}
             maxLength={2000}
             placeholder="e.g. Water is dripping under the kitchen sink whenever the faucet is running."
+            disabled={generating}
             onChange={(e) => setDescription(e.target.value)}
             className={`${inputClass(!!errors.description)} resize-y`}
           />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!title.trim() || generating || busy}
+            onClick={generateDescription}
+            className="self-start"
+          >
+            {generating ? "Writing description…" : "Write description with AI"}
+          </Button>
+          {!title.trim() && (
+            <span className="text-xs text-slate-500">Add a title to enable AI writing.</span>
+          )}
           {errors.description && <span className="text-xs text-red-600">{errors.description}</span>}
-        </label>
+        </div>
 
         <div className="flex flex-col gap-2">
           <p className="text-[13px] font-medium text-slate-900">Photos</p>
@@ -269,7 +324,7 @@ export function RequestForm({ unitId, userId }: { unitId: string; userId: string
         </label>
 
         <div className="flex gap-2.5">
-          <Button type="submit" disabled={busy}>
+          <Button type="submit" disabled={busy || generating}>
             {busy ? "Sending…" : "Submit request"}
           </Button>
           <Link

@@ -20,6 +20,21 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## AI maintenance descriptions
+
+Tenant maintenance requests can use NVIDIA NIM to draft a description from the request title,
+category, and urgency. Configure the following server-side environment variables:
+
+```env
+NVIDIA_API_KEY=your-nvidia-api-key
+# Optional:
+NVIDIA_NIM_MODEL=meta/llama-3.1-8b-instruct
+NVIDIA_NIM_API_URL=https://integrate.api.nvidia.com/v1/chat/completions
+```
+
+The API key is only used by the server and must not use a `NEXT_PUBLIC_` prefix. Tenants can review
+and edit the generated description before submitting their request.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
