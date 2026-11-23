@@ -80,3 +80,26 @@ export function inviteErrorMessage(raw: string) {
   }
   return "Something went wrong. Please try again.";
 }
+
+// Length of the email code. Must match "Email OTP Length" in the Supabase dashboard
+// (Authentication -> Providers -> Email). The default there is 6.
+export const OTP_LENGTH = 6;
+
+export function otpErrorMessage(error: { code?: string; message?: string }) {
+  const code = error.code ?? "";
+  if (code === "over_request_rate_limit" || code === "over_email_send_rate_limit") {
+    return "Too many attempts. Wait a minute, then try again.";
+  }
+  // Supabase uses the same error for a wrong code and an expired one.
+  return "That code is incorrect or has expired. Check it, or request a new code.";
+}
+
+export function signUpErrorMessage(error: { code?: string; message?: string }) {
+  if (error.code === "over_email_send_rate_limit" || error.code === "over_request_rate_limit") {
+    return "Too many emails were sent. Wait a minute, then try again.";
+  }
+  if (error.code === "weak_password") {
+    return "That password is too weak. Use at least 8 characters.";
+  }
+  return "We couldn't create your account. Please try again.";
+}

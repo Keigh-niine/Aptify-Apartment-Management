@@ -27,7 +27,9 @@ export function LoginForm() {
         setError(
           error.code === "invalid_credentials"
             ? "Incorrect email or password. Try again."
-            : "Something went wrong. Please try again."
+            : error.code === "email_not_confirmed"
+              ? "Your email isn't verified yet. Sign up again with the same email to get a new code."
+              : "Something went wrong. Please try again."
         );
         return;
       }

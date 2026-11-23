@@ -1,12 +1,13 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { AuthShell } from "@/components/auth/auth-shell";
 import { createClient } from "@/lib/supabase/client";
 import {
   generateUnits,
   inviteErrorMessage,
+  otpErrorMessage,
+  signUpErrorMessage,
   type AccountValues,
   type PropertyData,
   type Role,
@@ -17,10 +18,15 @@ import { PropertyStep } from "./property-step";
 import { ReviewStep } from "./review-step";
 import { TenantStep } from "./tenant-step";
 import { UnitsStep } from "./units-step";
+import { VerifyStep } from "./verify-step";
 
-type Step = "account" | "tenant" | "property" | "units" | "review";
+type Step = "account" | "tenant" | "property" | "units" | "review" | "verify";
 
-type AccountResult = { ok: true } | { ok: false; message: string | null };
+// needsOtp: the sign up email was sent and the person must enter the code first.
+type AccountResult = { ok: true } | { ok: false; message: string | null; needsOtp?: boolean };
+
+// What to do once the email is verified.
+type Pending = { kind: "join"; code: string } | { kind: "create" };
 
 const emptyProperty: PropertyData = {
   name: "",
@@ -31,6 +37,13 @@ const emptyProperty: PropertyData = {
   unitCount: 12,
 };
 
+// Full page load, same as the login form: it avoids carrying App Router data from
+// before the session existed, which can send a new landlord to the tenant page.
+function goToDashboard() {
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+  window.location.assign("/dashboard");
+}
+
 export function SignupFlow({
   initialRole,
   initialCode = "",
@@ -38,7 +51,6 @@ export function SignupFlow({
   initialRole: Role;
   initialCode?: string;
 }) {
-  const router = useRouter();
   const [step, setStep] = useState<Step>("account");
   const [account, setAccount] = useState<AccountValues | null>(null);
   const [emailError, setEmailError] = useState<string | undefined>();
@@ -46,88 +58,162 @@ export function SignupFlow({
   const [units, setUnits] = useState<UnitItem[]>([]);
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [joinError, setJoinError] = useState<string | undefined>();
+  const [pending, setPending] = useState<Pending | null>(null);
 
-  // The account is only created at the very end of step 2, so nothing is
-  // saved if someone abandons the flow. This prevents creating it twice on retry.
-  const accountCreated = useRef(false);
+  // The account is only created at the very end, so nothing is saved if someone
+  // abandons the flow. signUpSent stops us from emailing a second code on retry;
+  // accountVerified means the code was entered (or Confirm email is off).
+  const signUpSent = useRef(false);
+  const accountVerified = useRef(false);
 
   async function ensureAccount(): Promise<AccountResult> {
-    if (accountCreated.current) return { ok: true };
+    if (accountVerified.current) return { ok: true };
     if (!account) return { ok: false, message: "Something went wrong. Please start again." };
 
     const supabase = createClient();
-    const { data, error } = await supabase.auth.signUp({
-      email: account.email,
-      password: account.password,
-      options: { data: { first_name: account.firstName, last_name: account.lastName } },
-    });
 
-    if (error) {
-      if (error.code === "user_already_exists" || /already registered/i.test(error.message)) {
+    if (!signUpSent.current) {
+      const { data, error } = await supabase.auth.signUp({
+        email: account.email,
+        password: account.password,
+        options: { data: { first_name: account.firstName, last_name: account.lastName } },
+      });
+
+      if (error) {
+        if (error.code === "user_already_exists" || /already registered/i.test(error.message)) {
+          setEmailError("An account with this email already exists.");
+          setStep("account");
+          return { ok: false, message: null };
+        }
+        return { ok: false, message: signUpErrorMessage(error) };
+      }
+
+      // With Confirm email on, Supabase hides existing emails: it returns a user with
+      // no identities and sends nothing. Treat that as "already exists".
+      if (data.user && data.user.identities?.length === 0) {
         setEmailError("An account with this email already exists.");
         setStep("account");
         return { ok: false, message: null };
       }
-      return { ok: false, message: "We couldn't create your account. Please try again." };
+
+      signUpSent.current = true;
+
+      // Confirm email is off: Supabase signed the person in right away.
+      if (data.session) {
+        accountVerified.current = true;
+        return { ok: true };
+      }
     }
 
-    accountCreated.current = true;
+    return { ok: false, message: null, needsOtp: true };
+  }
 
-    if (!data.session) {
-      return {
-        ok: false,
-        message:
-          "Your account was created but you are not signed in. In Supabase, turn off “Confirm email” (Authentication → Sign In / Providers → Email) while developing, then log in.",
-      };
+  // Runs after the account exists and is verified.
+  async function finish(action: Pending): Promise<string | null> {
+    const supabase = createClient();
+
+    if (action.kind === "join") {
+      const { error } = await supabase.rpc("redeem_invite", { p_code: action.code });
+      if (error) return inviteErrorMessage(error.message);
+    } else {
+      const { error } = await supabase.rpc("create_property", {
+        p_name: property.name,
+        p_street: property.street,
+        p_city: property.city,
+        p_province: property.province,
+        p_type: property.type,
+        p_unit_labels: units.map((u) => u.label.trim()),
+      });
+      if (error) return "We couldn't create your property. Please try again.";
     }
-    return { ok: true };
+
+    goToDashboard();
+    return null;
+  }
+
+  function startVerify(action: Pending) {
+    setPending(action);
+    setStep("verify");
   }
 
   async function joinUnit(code: string): Promise<string | null> {
+    const action: Pending = { kind: "join", code };
     const acc = await ensureAccount();
-    if (!acc.ok) return acc.message;
-
-    const supabase = createClient();
-    const { error } = await supabase.rpc("redeem_invite", { p_code: code });
-    if (error) return inviteErrorMessage(error.message);
-
-    router.push("/dashboard");
-    router.refresh();
-    return null;
+    if (!acc.ok) {
+      if (acc.needsOtp) startVerify(action);
+      return acc.message;
+    }
+    return finish(action);
   }
 
   async function createProperty() {
     setCreateError(null);
     setCreating(true);
+    const action: Pending = { kind: "create" };
 
     const acc = await ensureAccount();
     if (!acc.ok) {
-      setCreateError(acc.message);
+      if (acc.needsOtp) startVerify(action);
+      else if (acc.message) setCreateError(acc.message);
       setCreating(false);
       return;
     }
+
+    const message = await finish(action);
+    if (message) {
+      setCreateError(message);
+      setCreating(false);
+    }
+  }
+
+  async function verifyCode(token: string): Promise<string | null> {
+    if (!account) return "Something went wrong. Please start again.";
 
     const supabase = createClient();
-    const { error } = await supabase.rpc("create_property", {
-      p_name: property.name,
-      p_street: property.street,
-      p_city: property.city,
-      p_province: property.province,
-      p_type: property.type,
-      p_unit_labels: units.map((u) => u.label.trim()),
+    const { error } = await supabase.auth.verifyOtp({
+      email: account.email,
+      token,
+      type: "signup",
     });
+    if (error) return otpErrorMessage(error);
 
-    if (error) {
-      setCreateError("We couldn't create your property. Please try again.");
-      setCreating(false);
-      return;
+    accountVerified.current = true;
+
+    // Finish what the person started. If it fails, send them back to that step.
+    const action = pending;
+    if (!action) {
+      goToDashboard();
+      return null;
     }
 
-    router.push("/dashboard");
-    router.refresh();
+    const message = await finish(action);
+    if (message) {
+      if (action.kind === "join") {
+        setJoinError(message);
+        setStep("tenant");
+      } else {
+        setCreateError(message);
+        setCreating(false);
+        setStep("review");
+      }
+    }
+    return null;
+  }
+
+  async function resendCode(): Promise<string | null> {
+    if (!account) return "Something went wrong. Please start again.";
+
+    const { error } = await createClient().auth.resend({ type: "signup", email: account.email });
+    if (error) return signUpErrorMessage(error);
+    return null;
   }
 
   function onAccountNext(values: AccountValues) {
+    // New email or password means the earlier sign up no longer matches.
+    if (values.email !== account?.email || values.password !== account?.password) {
+      signUpSent.current = false;
+    }
     setAccount(values);
     setEmailError(undefined);
     setStep(values.role === "tenant" ? "tenant" : "property");
@@ -165,6 +251,27 @@ export function SignupFlow({
     );
   }
 
+  if (step === "verify") {
+    return (
+      <AuthShell
+        heading="Check your email."
+        text="We send a one-time code to confirm the address is yours before your account is created."
+        bullets={[
+          "The code is sent to the email you signed up with",
+          "It expires after a short time",
+          "Didn't get it? Request a new code",
+        ]}
+      >
+        <VerifyStep
+          email={account?.email ?? ""}
+          onVerify={verifyCode}
+          onResend={resendCode}
+          onBack={() => setStep(pending?.kind === "join" ? "tenant" : "review")}
+        />
+      </AuthShell>
+    );
+  }
+
   if (step === "tenant") {
     return (
       <AuthShell
@@ -178,7 +285,8 @@ export function SignupFlow({
       >
         <TenantStep
           email={account?.email ?? ""}
-          initialCode={initialCode}
+          initialCode={pending?.kind === "join" ? pending.code : initialCode}
+          initialError={joinError}
           onBack={() => setStep("account")}
           onJoin={joinUnit}
         />

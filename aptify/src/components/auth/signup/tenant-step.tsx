@@ -77,18 +77,20 @@ function PreviewCard({ p }: { p: InvitePreview }) {
 export function TenantStep({
   email,
   initialCode = "",
+  initialError,
   onBack,
   onJoin,
 }: {
   email: string;
   initialCode?: string;
+  initialError?: string;
   onBack: () => void;
   // Returns an error message, or null on success.
   onJoin: (code: string) => Promise<string | null>;
 }) {
   const [code, setCode] = useState(initialCode.toUpperCase());
   const [preview, setPreview] = useState<InvitePreview | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError ?? null);
   const [checking, setChecking] = useState(false);
   const [joining, setJoining] = useState(false);
 
