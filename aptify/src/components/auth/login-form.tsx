@@ -26,9 +26,9 @@ export function LoginForm() {
       if (error) {
         setError(
           error.code === "invalid_credentials"
-            ? "Incorrect email or password. Try again."
+            ? "Incorrect email or password. If you never finished verifying your email, your account may have expired. Sign up again."
             : error.code === "email_not_confirmed"
-              ? "Your email isn't verified yet. Sign up again with the same email to get a new code."
+              ? "Your email isn't verified yet. Sign up again with the same email to get a new code. Unverified accounts expire after a few minutes, so you may need to start over."
               : "Something went wrong. Please try again."
         );
         return;

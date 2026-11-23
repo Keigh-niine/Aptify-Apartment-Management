@@ -69,6 +69,9 @@ export type InvitePreview = {
 };
 
 export function inviteErrorMessage(raw: string) {
+  if (raw.includes("too_many_attempts")) {
+    return "Too many incorrect codes. Wait about 15 minutes, then try again.";
+  }
   if (raw.includes("invalid_invite_code")) {
     return "We couldn't find that code. Check it and try again.";
   }
@@ -84,6 +87,11 @@ export function inviteErrorMessage(raw: string) {
 // Length of the email code. Must match "Email OTP Length" in the Supabase dashboard
 // (Authentication -> Providers -> Email). The default there is 6.
 export const OTP_LENGTH = 6;
+
+// How long an unverified sign up is kept. The database job in
+// cleanup-unverified-signups.sql deletes accounts this long after their last code was sent,
+// so keep the two numbers the same. Email can be slow, so do not set this below ~5 minutes.
+export const UNVERIFIED_SIGNUP_TTL_MINUTES = 10;
 
 export function otpErrorMessage(error: { code?: string; message?: string }) {
   const code = error.code ?? "";

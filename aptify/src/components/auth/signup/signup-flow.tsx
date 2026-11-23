@@ -8,6 +8,7 @@ import {
   inviteErrorMessage,
   otpErrorMessage,
   signUpErrorMessage,
+  UNVERIFIED_SIGNUP_TTL_MINUTES,
   type AccountValues,
   type PropertyData,
   type Role,
@@ -62,10 +63,19 @@ export function SignupFlow({
   const [pending, setPending] = useState<Pending | null>(null);
 
   // The account is only created at the very end, so nothing is saved if someone
-  // abandons the flow. signUpSent stops us from emailing a second code on retry;
+  // abandons the flow. signUpSentAt stops us from emailing a second code on retry, but only
+  // while the pending account can still exist: a database job deletes unverified accounts
+  // after UNVERIFIED_SIGNUP_TTL_MINUTES, after which we must sign up again.
   // accountVerified means the code was entered (or Confirm email is off).
-  const signUpSent = useRef(false);
+  const signUpSentAt = useRef<number | null>(null);
   const accountVerified = useRef(false);
+
+  function signUpIsPending() {
+    return (
+      signUpSentAt.current !== null &&
+      Date.now() - signUpSentAt.current < UNVERIFIED_SIGNUP_TTL_MINUTES * 60_000
+    );
+  }
 
   async function ensureAccount(): Promise<AccountResult> {
     if (accountVerified.current) return { ok: true };
@@ -73,7 +83,7 @@ export function SignupFlow({
 
     const supabase = createClient();
 
-    if (!signUpSent.current) {
+    if (!signUpIsPending()) {
       const { data, error } = await supabase.auth.signUp({
         email: account.email,
         password: account.password,
@@ -97,7 +107,7 @@ export function SignupFlow({
         return { ok: false, message: null };
       }
 
-      signUpSent.current = true;
+      signUpSentAt.current = Date.now();
 
       // Confirm email is off: Supabase signed the person in right away.
       if (data.session) {
@@ -203,18 +213,34 @@ export function SignupFlow({
     return null;
   }
 
+  // Unverified accounts are deleted by a database job shortly after the TTL passes
+  // (see cleanup-unverified-signups.sql). auth.resend() fails once the
+  // account is gone, so resend with signUp instead: it emails a new code to a still-pending
+  // account, and quietly creates the account again if the old one was cleaned up.
   async function resendCode(): Promise<string | null> {
     if (!account) return "Something went wrong. Please start again.";
 
-    const { error } = await createClient().auth.resend({ type: "signup", email: account.email });
+    const { data, error } = await createClient().auth.signUp({
+      email: account.email,
+      password: account.password,
+      options: { data: { first_name: account.firstName, last_name: account.lastName } },
+    });
     if (error) return signUpErrorMessage(error);
+
+    // No identities means the email now belongs to a verified account.
+    if (data.user && data.user.identities?.length === 0) {
+      return "An account with this email already exists. Go back and log in instead.";
+    }
+
+    // A fresh code was sent (or the account was recreated): restart the clock.
+    signUpSentAt.current = Date.now();
     return null;
   }
 
   function onAccountNext(values: AccountValues) {
     // New email or password means the earlier sign up no longer matches.
     if (values.email !== account?.email || values.password !== account?.password) {
-      signUpSent.current = false;
+      signUpSentAt.current = null;
     }
     setAccount(values);
     setEmailError(undefined);
