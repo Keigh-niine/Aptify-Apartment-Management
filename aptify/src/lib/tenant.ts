@@ -16,11 +16,24 @@ export const getTenantContext = cache(async () => {
     supabase.rpc("tenant_overview"),
   ]);
 
+  const overview = (overviewRes.data ?? null) as TenantOverview | null;
+
+  // A landlord with no lease has nothing to see in the tenant area; send them home.
+  // (Someone who is both a landlord and a tenant still gets in once they hold a lease.)
+  if (!overviewRes.error && overview && !overview.has_lease) {
+    const { data: owned } = await supabase
+      .from("properties")
+      .select("id")
+      .eq("owner_id", user.id)
+      .limit(1);
+    if (owned && owned.length > 0) redirect("/landlord");
+  }
+
   return {
     supabase,
     user,
     profile,
-    overview: (overviewRes.data ?? null) as TenantOverview | null,
+    overview,
     overviewError: overviewRes.error?.message ?? null,
   };
 });

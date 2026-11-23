@@ -114,8 +114,10 @@ export function SignupFlow({
     const supabase = createClient();
 
     if (action.kind === "join") {
-      const { error } = await supabase.rpc("redeem_invite", { p_code: action.code });
+      const { data, error } = await supabase.rpc("redeem_invite", { p_code: action.code });
       if (error) return inviteErrorMessage(error.message);
+      // A bad code comes back as null (not an error), so failed guesses can be counted.
+      if (!data) return inviteErrorMessage("invalid_invite_code");
     } else {
       const { error } = await supabase.rpc("create_property", {
         p_name: property.name,

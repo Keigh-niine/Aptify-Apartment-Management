@@ -2058,3 +2058,182 @@ create policy "payment receipts: landlord view" on storage.objects for select to
 
 create policy "payment receipts: landlord delete" on storage.objects for delete to authenticated
   using (bucket_id = 'payment-receipts' and public.is_landlord_of_tenant(public.receipt_owner_id(name)));
+
+
+
+  -- Migration: invite code throttling (apply once to an existing database)
+
+-- ---------- INVITE CODE THROTTLING ----------------------------------
+-- Failed code guesses are counted per caller. After 10 failures in 15 minutes the
+-- caller is blocked until old attempts age out. Only failures are counted, so a
+-- tenant who types the right code is never slowed down.
+--
+-- "Caller" is the client IP taken from the request headers (best effort: it is only
+-- as trustworthy as the proxy in front of Supabase) and, for redeem_invite, the user id.
+-- For stronger protection, also add CAPTCHA on signup and edge rate limits.
+create table if not exists invite_attempts (
+  id           bigint generated always as identity primary key,
+  key          text not null,                       -- 'ip:1.2.3.4' or 'user:<uuid>'
+  attempted_at timestamptz not null default now()
+);
+create index if not exists invite_attempts_key_time on invite_attempts (key, attempted_at);
+create index if not exists invite_attempts_time     on invite_attempts (attempted_at);
+alter table invite_attempts enable row level security;   -- no policies: only the functions below touch it
+revoke all on invite_attempts from anon, authenticated;
+
+create or replace function _request_ip() returns text
+language plpgsql stable set search_path = public as $$
+declare h json;
+begin
+  begin
+    h := nullif(current_setting('request.headers', true), '')::json;
+  exception when others then
+    h := null;
+  end;
+  return coalesce(
+    nullif(trim(h->>'cf-connecting-ip'), ''),
+    nullif(trim(h->>'x-real-ip'), ''),
+    nullif(trim(split_part(coalesce(h->>'x-forwarded-for', ''), ',', 1)), ''),
+    'unknown'
+  );
+end $$;
+
+create or replace function _invite_blocked(p_keys text[]) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from invite_attempts
+     where key = any(p_keys) and attempted_at > now() - interval '15 minutes'
+     group by key having count(*) >= 10
+  ) $$;
+
+create or replace function _invite_fail(p_keys text[]) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into invite_attempts (key) select unnest(p_keys);
+  -- Housekeeping: now and then, drop attempts older than a day.
+  if random() < 0.02 then
+    delete from invite_attempts where attempted_at < now() - interval '1 day';
+  end if;
+end $$;
+
+revoke execute on function _request_ip()            from public, anon, authenticated;
+revoke execute on function _invite_blocked(text[])  from public, anon, authenticated;
+revoke execute on function _invite_fail(text[])     from public, anon, authenticated;
+
+-- Preview a code before signup. Every kind of bad code (unknown, used, revoked, expired)
+-- gets the same answer, so a guesser learns nothing about which codes exist. If the invite
+-- is locked to an email, the email typed at signup must match.
+create or replace function preview_invite(p_code text, p_email text default null) returns jsonb
+language plpgsql volatile security definer set search_path = public as $$
+declare v_inv unit_invites; v jsonb; v_keys text[] := array['ip:' || _request_ip()];
+begin
+  if _invite_blocked(v_keys) then
+    return jsonb_build_object('ok', false, 'error', 'too_many_attempts');
+  end if;
+
+  select * into v_inv from unit_invites where code = upper(trim(p_code));
+  if not found
+     or v_inv.redeemed_at is not null
+     or v_inv.revoked_at  is not null
+     or v_inv.expires_at  <  now() then
+    perform _invite_fail(v_keys);
+    return jsonb_build_object('ok', false, 'error', 'invalid_invite_code');
+  end if;
+  if v_inv.invitee_email is not null
+     and lower(trim(coalesce(p_email, ''))) <> lower(v_inv.invitee_email) then
+    perform _invite_fail(v_keys);
+    return jsonb_build_object('ok', false, 'error', 'invite_email_mismatch');
+  end if;
+
+  select jsonb_build_object(
+    'ok', true,
+    'unit_label',       u.label,
+    'property_name',    p.name,
+    'street_address',   p.street_address,
+    'city',             p.city,
+    'monthly_rent',     t.monthly_rent,
+    'due_day',          t.due_day,
+    'start_date',       l.start_date,
+    'security_deposit', l.security_deposit,
+    'advance_rent',     l.advance_rent,
+    'charges', coalesce((
+        select jsonb_agg(jsonb_build_object('name', c.name, 'mode', c.mode, 'fixed_amount', c.fixed_amount)
+                         order by c.name)
+          from lease_charges c where c.lease_id = l.id and c.active), '[]'::jsonb)
+  ) into v
+  from leases l
+  join units u      on u.id = l.unit_id
+  join properties p on p.id = u.property_id
+  join lateral (select monthly_rent, due_day from lease_terms
+                 where lease_id = l.id order by effective_from desc limit 1) t on true
+  where l.id = v_inv.lease_id;
+
+  return coalesce(v, jsonb_build_object('ok', false, 'error', 'invalid_invite_code'));
+end $$;
+
+revoke execute on function preview_invite(text, text) from public;
+grant  execute on function preview_invite(text, text) to anon, authenticated;
+
+-- Redeeming. A bad code returns NULL instead of raising: a raise would roll back the
+-- failed-attempt record, and the throttle would never fill up. Callers treat NULL as
+-- "invalid code". A blocked caller gets the 'too_many_attempts' exception.
+create or replace function redeem_invite(p_code text) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  v_inv unit_invites; v_lease leases; v_owner uuid; v_prop uuid; v_bill uuid; v_email text;
+  v_keys text[];
+begin
+  if auth.uid() is null then raise exception 'not_authenticated'; end if;
+
+  v_keys := array['ip:' || _request_ip(), 'user:' || auth.uid()::text];
+  if _invite_blocked(v_keys) then raise exception 'too_many_attempts'; end if;
+
+  select * into v_inv from unit_invites where code = upper(trim(p_code)) for update;
+  if not found
+     or v_inv.redeemed_at is not null
+     or v_inv.revoked_at  is not null
+     or v_inv.expires_at  <  now() then
+    perform _invite_fail(v_keys);
+    return null;
+  end if;
+
+  if v_inv.invitee_email is not null then
+    select email into v_email from auth.users where id = auth.uid();
+    if lower(coalesce(v_email, '')) <> lower(v_inv.invitee_email) then
+      perform _invite_fail(v_keys);
+      return null;
+    end if;
+  end if;
+
+  update leases set tenant_id = auth.uid(), status = 'active'
+   where id = v_inv.lease_id and tenant_id is null and status = 'pending'
+   returning * into v_lease;
+  if not found then raise exception 'invite_already_used'; end if;
+
+  update unit_invites set redeemed_by = auth.uid(), redeemed_at = now() where id = v_inv.id;
+
+  if v_lease.security_deposit + v_lease.advance_rent > 0 then
+    insert into bills (lease_id, bill_type, billing_period, due_date, created_by)
+    values (v_lease.id, 'move_in', date_trunc('month', v_lease.start_date)::date, current_date, v_inv.created_by)
+    returning id into v_bill;
+
+    if v_lease.security_deposit > 0 then
+      insert into bill_items (bill_id, description, category, amount, sort_order)
+      values (v_bill, 'Security deposit', 'deposit', v_lease.security_deposit, 1);
+    end if;
+    if v_lease.advance_rent > 0 then
+      insert into bill_items (bill_id, description, category, amount, sort_order)
+      values (v_bill, 'Advance rent', 'advance_rent', v_lease.advance_rent, 2);
+    end if;
+  end if;
+
+  select p.owner_id, p.id into v_owner, v_prop
+    from units u join properties p on p.id = u.property_id where u.id = v_lease.unit_id;
+
+  insert into notifications (recipient_id, type, title, body, property_id, unit_id)
+  select v_owner, 'tenant_joined', 'Tenant joined',
+         pr.first_name || ' ' || pr.last_name || ' joined ' || un.label || '.', v_prop, v_lease.unit_id
+    from profiles pr, units un where pr.id = auth.uid() and un.id = v_lease.unit_id;
+
+  return v_lease.id;
+end $$;

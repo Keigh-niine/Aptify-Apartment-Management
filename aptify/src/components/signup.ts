@@ -69,6 +69,9 @@ export type InvitePreview = {
 };
 
 export function inviteErrorMessage(raw: string) {
+  if (raw.includes("too_many_attempts")) {
+    return "Too many incorrect codes. Wait about 15 minutes, then try again.";
+  }
   if (raw.includes("invalid_invite_code")) {
     return "We couldn't find that code. Check it and try again.";
   }
