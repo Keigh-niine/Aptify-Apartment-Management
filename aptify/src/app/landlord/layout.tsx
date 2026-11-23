@@ -1,3 +1,4 @@
+import { connection } from "next/server";
 import { Sidebar } from "@/components/landlord/sidebar";
 import { ToastProvider } from "@/components/toast";
 import { getLandlordContext } from "@/lib/landlord";
@@ -5,6 +6,7 @@ import { getLandlordContext } from "@/lib/landlord";
 export const instant = false;
 
 export default async function LandlordLayout({ children }: { children: React.ReactNode }) {
+  await connection();
   const { profile, property } = await getLandlordContext();
   const initials =
     `${profile?.first_name?.[0] ?? ""}${profile?.last_name?.[0] ?? ""}`.toUpperCase() || "LA";

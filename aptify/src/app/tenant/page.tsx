@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { connection } from "next/server";
 import { SiteButton } from "@/components/site-button";
 import { formatPeso } from "@/lib/format";
 import { methodLabel, monthTitle } from "@/lib/ledger";
@@ -153,6 +154,7 @@ function Card({
 }
 
 export default async function TenantHomePage() {
+  await connection();
   const { overview, overviewError } = await getTenantContext();
 
   if (overviewError || !overview) {

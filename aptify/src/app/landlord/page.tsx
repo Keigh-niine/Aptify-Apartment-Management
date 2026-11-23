@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { connection } from "next/server";
 import { RpcButton } from "@/components/landlord/rpc-button";
 import { formatPeso } from "@/lib/format";
 import {
@@ -91,6 +92,7 @@ function AnnouncementRow({ a }: { a: OverviewAnnouncement }) {
 }
 
 export default async function OverviewPage() {
+  await connection();
   const { supabase, user, property } = await getLandlordContext();
 
   const { data, error } = await supabase.rpc("landlord_overview", { p_property: property.id });
