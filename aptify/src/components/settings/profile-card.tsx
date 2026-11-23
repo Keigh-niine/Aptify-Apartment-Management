@@ -8,10 +8,18 @@ import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/client";
 import { SettingsCard } from "./settings-card";
 
-type Values = { firstName: string; lastName: string; email: string; phone: string };
+type Values = { firstName: string; lastName: string; phone: string };
 type Errors = Partial<Record<keyof Values, string>>;
 
-export function ProfileCard({ userId, initial }: { userId: string; initial: Values }) {
+export function ProfileCard({
+  userId,
+  email,
+  initial,
+}: {
+  userId: string;
+  email: string;
+  initial: Values;
+}) {
   const router = useRouter();
   const toast = useToast();
   const [form, setForm] = useState<Values>(initial);
@@ -25,11 +33,9 @@ export function ProfileCard({ userId, initial }: { userId: string; initial: Valu
     e.preventDefault();
 
     const next: Errors = {};
-    const email = form.email.trim();
     const phone = form.phone.trim();
     if (!form.firstName.trim()) next.firstName = "Enter your first name.";
     if (!form.lastName.trim()) next.lastName = "Enter your last name.";
-    if (!/^\S+@\S+\.\S+$/.test(email)) next.email = "Enter a valid email address.";
     if (phone && !/^[0-9+()\-\s]{7,20}$/.test(phone)) next.phone = "Enter a valid phone number.";
     setErrors(next);
     if (Object.keys(next).length > 0) return;
@@ -52,33 +58,7 @@ export function ProfileCard({ userId, initial }: { userId: string; initial: Valu
       return;
     }
 
-    // The email lives in the login system, so it is changed separately.
-    if (email.toLowerCase() !== initial.email.toLowerCase()) {
-      const { data, error: emailError } = await supabase.auth.updateUser({ email });
-
-      if (emailError) {
-        setErrors({
-          email:
-            emailError.code === "email_exists"
-              ? "That email is already in use."
-              : "Couldn't change your email. Try again.",
-        });
-        toast("err", "Your name and phone were saved, but the email wasn't changed.");
-        setSaving(false);
-        router.refresh();
-        return;
-      }
-
-      toast(
-        data.user?.new_email ? "info" : "ok",
-        data.user?.new_email
-          ? "Check your inbox to confirm your new email address."
-          : "Profile saved."
-      );
-    } else {
-      toast("ok", "Profile saved.");
-    }
-
+    toast("ok", "Profile saved.");
     setSaving(false);
     router.refresh(); // updates the name shown in the sidebar
   }
@@ -106,9 +86,10 @@ export function ProfileCard({ userId, initial }: { userId: string; initial: Valu
           label="Email address"
           type="email"
           autoComplete="email"
-          value={form.email}
-          onChange={set("email")}
-          error={errors.email}
+          value={email}
+          readOnly
+          disabled
+          hint="Your email is used to sign in and can't be changed here."
         />
         <Field
           label="Phone number"

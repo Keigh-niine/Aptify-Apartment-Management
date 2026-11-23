@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/landlord/units/confirm-dialog";
-import { inputClass, Toggle } from "@/components/landlord/units/ui";
+import { inputClass } from "@/components/landlord/units/ui";
 import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
 import type { AnnouncementRow, UnitOption } from "@/lib/announcements";
@@ -39,7 +39,6 @@ export function AnnouncementsBoard({
   const [message, setMessage] = useState("");
   const [audience, setAudience] = useState<Audience>("property");
   const [unitIds, setUnitIds] = useState<string[]>([]);
-  const [notifyEmail, setNotifyEmail] = useState(false);
   const [errors, setErrors] = useState<Errors>({});
   const [saving, setSaving] = useState<null | "post" | "draft">(null);
 
@@ -54,7 +53,6 @@ export function AnnouncementsBoard({
     setMessage("");
     setAudience("property");
     setUnitIds([]);
-    setNotifyEmail(false);
     setErrors({});
   }
 
@@ -65,7 +63,6 @@ export function AnnouncementsBoard({
     setMessage(a.body);
     setAudience(a.audience);
     setUnitIds(a.announcement_units.map((u) => u.unit_id));
-    setNotifyEmail(a.notify_email);
     setErrors({});
     composerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -91,7 +88,6 @@ export function AnnouncementsBoard({
       p_body: m,
       p_audience: audience,
       p_unit_ids: audience === "units" ? unitIds : [],
-      p_notify_email: notifyEmail,
       p_publish: publish,
     });
     setSaving(null);
@@ -224,11 +220,6 @@ export function AnnouncementsBoard({
               {errors.units && <p className="text-xs text-red-600">{errors.units}</p>}
             </div>
           )}
-        </div>
-
-        <div className="flex items-center gap-3">
-          <Toggle checked={notifyEmail} onChange={setNotifyEmail} label="Also notify tenants by email" />
-          <span className="text-sm text-slate-900">Also notify tenants by email</span>
         </div>
 
         <div className="flex flex-wrap gap-2.5">

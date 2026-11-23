@@ -11,7 +11,7 @@ export default async function AnnouncementsPage() {
     supabase
       .from("announcements")
       .select(
-        "id, title, body, audience, notify_email, status, published_at, created_at, announcement_units(unit_id)"
+        "id, title, body, audience, status, published_at, created_at, announcement_units(unit_id)"
       )
       .eq("property_id", property.id),
     supabase.from("units").select("id, label").eq("property_id", property.id),
