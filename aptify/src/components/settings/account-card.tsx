@@ -21,10 +21,10 @@ const copy = {
   },
   tenant: {
     intro:
-      "This permanently deletes your account and everything tied to it. Your landlord will no longer see your payment history.",
+      "This permanently deletes your account and everything tied to it. Your landlord keeps a copy of your payment receipts for their records.",
     items: [
       "Your profile and login",
-      "Your lease, bills, payments and receipts",
+      "Your lease, bills and payments",
       "Your repair requests, photos and comments",
     ],
   },

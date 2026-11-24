@@ -11,7 +11,37 @@ const badge: Record<RowKind, { text: string; cls: string }> = {
   vacant: { text: "Vacant", cls: "bg-slate-100 text-slate-700" },
 };
 
-const cols = "grid grid-cols-[90px_minmax(150px,200px)_110px_150px_minmax(150px,200px)_1fr] items-center gap-4";
+const cols =
+  "grid grid-cols-[90px_minmax(140px,180px)_minmax(180px,240px)_100px_140px_minmax(130px,170px)_1fr] items-center gap-4";
+
+function Contact({
+  email,
+  phone,
+  showPhone,
+}: {
+  email: string | null;
+  phone: string | null;
+  showPhone: boolean;
+}) {
+  if (!email && !phone) return <span className="text-slate-500">{showPhone ? "No contact info" : "—"}</span>;
+  return (
+    <span className="flex min-w-0 flex-col gap-0.5">
+      {email && (
+        <a href={`mailto:${email}`} title={email} className="truncate text-slate-900 hover:underline">
+          {email}
+        </a>
+      )}
+      {showPhone &&
+        (phone ? (
+          <a href={`tel:${phone.replace(/[^0-9+]/g, "")}`} className="truncate text-slate-500 hover:underline">
+            {phone}
+          </a>
+        ) : (
+          <span className="text-slate-400">No phone number</span>
+        ))}
+    </span>
+  );
+}
 
 export function UnitsTable({ rows }: { rows: UnitRow[] }) {
   if (rows.length === 0) {
@@ -24,10 +54,11 @@ export function UnitsTable({ rows }: { rows: UnitRow[] }) {
 
   return (
     <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-      <div className="min-w-[900px]">
+      <div className="min-w-[1100px]">
         <div className={`${cols} border-b border-slate-200 px-6 py-3 text-xs font-semibold text-slate-500`}>
           <span>Unit</span>
           <span>Tenant</span>
+          <span>Contact</span>
           <span>Rent</span>
           <span>Status</span>
           <span>Invite</span>
@@ -58,6 +89,11 @@ export function UnitsTable({ rows }: { rows: UnitRow[] }) {
               <span className={tenant ? "text-slate-900" : "text-slate-500"}>
                 {tenant ?? "Not assigned"}
               </span>
+              <Contact
+                email={kind === "occupied" ? r.tenant_email : r.invitee_email}
+                phone={kind === "occupied" ? r.tenant_phone : null}
+                showPhone={kind === "occupied"}
+              />
               <span className="text-slate-900">
                 {r.rent !== null ? formatPeso(Number(r.rent)).replace(/\.00$/, "") : "—"}
               </span>

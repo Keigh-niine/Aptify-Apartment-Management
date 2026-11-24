@@ -106,10 +106,10 @@ export function RowActions({ kind, unitId, label, tenantName, leaseId, inviteId,
           intro={`${tenantName ?? "This tenant"} will be removed from ${label} and their account will be deleted. This can't be undone.`}
           items={[
             "Their account and login",
-            "Their lease, bills, payments and receipts",
+            "Their lease, bills and payments",
             "Their repair requests, photos and comments",
           ]}
-          note="If this person also owns a property or rents from another landlord, their account is kept and only their records with you are deleted."
+          note="Receipts they paid stay saved in your Rent ledger. If this person also owns a property or rents from another landlord, their account is kept and only their records with you are deleted."
           confirmLabel="Remove and delete"
           busy={busy}
           onCancel={() => setDialog(null)}

@@ -1,6 +1,6 @@
 import { LedgerBoard } from "@/components/landlord/ledger/ledger-board";
 import { getLandlordContext } from "@/lib/landlord";
-import type { LedgerData } from "@/lib/ledger";
+import type { LedgerData, ReceiptRecord } from "@/lib/ledger";
 
 export const instant = false;
 
@@ -50,5 +50,23 @@ export default async function RentLedgerPage() {
     ),
   };
 
-  return <LedgerBoard data={withUrls} propertyName={property.name} />;
+  // Permanent receipt records. They stay even if the tenant is removed or deletes their account.
+  const { data: receiptRows, error: receiptsError } = await supabase
+    .from("receipt_records")
+    .select(
+      "id, receipt_no, issued_at, tenant_name, tenant_email, unit_label, bill_type, billing_period, amount, method, reference_no, received_on, pay_status"
+    )
+    .eq("property_id", property.id)
+    .order("issued_at", { ascending: false })
+    .limit(500);
+
+  return (
+    <LedgerBoard
+      data={withUrls}
+      propertyId={property.id}
+      propertyName={property.name}
+      receipts={(receiptRows ?? []) as ReceiptRecord[]}
+      receiptsError={receiptsError?.message ?? null}
+    />
+  );
 }

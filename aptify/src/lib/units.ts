@@ -7,11 +7,14 @@ export type UnitRow = {
   lease_id: string | null;
   lease_status: "pending" | "active" | null;
   tenant_name: string | null;
+  tenant_email: string | null;
+  tenant_phone: string | null;
   rent: number | null;
   invite_id: string | null;
   code: string | null;
   expires_at: string | null;
   invitee_name: string | null;
+  invitee_email: string | null;
 };
 
 export type RowKind = "occupied" | "pending" | "expired" | "vacant";

@@ -31,6 +31,7 @@ export type BillLedgerRow = LedgerTenant & {
   balance: number;
   method: string | null;
   amount: number;
+  paid_on: string | null; // date the last confirmed payment was received
   pending: PendingPayment | null;
 };
 
@@ -45,6 +46,8 @@ export type UnbilledLedgerRow = LedgerTenant & {
   balance: null;
   method: null;
   amount: null;
+  paid_on: null;
+  starts_on: string | null; // set when the lease has not started yet
   pending: null;
 };
 
@@ -58,6 +61,28 @@ export type LedgerData = {
   open_repairs: number;
   next_receipt_year: number;
   next_receipt_number: number;
+};
+
+export type ReceiptRecord = {
+  id: string;
+  receipt_no: string;
+  issued_at: string;
+  tenant_name: string;
+  tenant_email: string | null;
+  unit_label: string;
+  bill_type: "monthly" | "move_in";
+  billing_period: string;
+  amount: number;
+  method: Method;
+  reference_no: string | null;
+  received_on: string;
+  pay_status: "fully_paid" | "partial" | "paid_overdue";
+};
+
+export const receiptStatus: Record<ReceiptRecord["pay_status"], { text: string; cls: string }> = {
+  fully_paid: { text: "Fully paid", cls: "bg-green-100 text-green-800" },
+  partial: { text: "Partial", cls: "bg-sky-100 text-sky-700" },
+  paid_overdue: { text: "Paid overdue", cls: "bg-amber-100 text-amber-800" },
 };
 
 export const methodLabel: Record<string, string> = { cash: "Cash", gcash: "GCash", maya: "Maya" };
@@ -76,7 +101,9 @@ export function statusBadge(r: LedgerRow): { text: string; cls: string } {
     case "partial":
       return { text: "Partial", cls: "bg-sky-100 text-sky-700" };
     case "unbilled":
-      return { text: "Not billed", cls: "bg-slate-100 text-slate-700" };
+      return r.starts_on
+        ? { text: `Starts ${shortDate(r.starts_on)}`, cls: "bg-slate-100 text-slate-700" }
+        : { text: "Not billed", cls: "bg-slate-100 text-slate-700" };
     default:
       return { text: "Unpaid", cls: "bg-slate-100 text-slate-700" };
   }
@@ -99,6 +126,25 @@ export const receiptNo = (year: number, n: number) =>
 export function monthTitle(iso: string) {
   return new Date(iso + "T00:00:00Z").toLocaleDateString("en-US", {
     month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+// "Nov 12" from "2026-11-12"
+export function shortDate(iso: string) {
+  return new Date(iso + "T00:00:00Z").toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+// "Nov 12, 2026" from "2026-11-12"
+export function dateWithYear(iso: string) {
+  return new Date(iso + "T00:00:00Z").toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
     year: "numeric",
     timeZone: "UTC",
   });

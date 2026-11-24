@@ -827,6 +827,9 @@ begin
       select u.id as unit_id, u.label, u.listed_rent,
              l.id as lease_id, l.status as lease_status,
              case when pr.id is not null then pr.first_name || ' ' || pr.last_name end as tenant_name,
+             -- Contact details. Email lives in auth.users, phone in profiles.
+             case when pr.id is not null then (select au.email from auth.users au where au.id = pr.id) end as tenant_email,
+             pr.phone as tenant_phone,
              coalesce(
                (select t.monthly_rent from lease_terms t
                  where t.lease_id = l.id and t.effective_from <= current_date
@@ -834,7 +837,7 @@ begin
                (select t.monthly_rent from lease_terms t
                  where t.lease_id = l.id order by t.effective_from asc limit 1),
                u.listed_rent) as rent,
-             i.id as invite_id, i.code, i.expires_at, i.invitee_name
+             i.id as invite_id, i.code, i.expires_at, i.invitee_name, i.invitee_email
         from units u
         left join leases l on l.unit_id = u.id and l.status in ('pending', 'active')
         left join profiles pr on pr.id = l.tenant_id
@@ -1581,6 +1584,11 @@ begin
                 when py.paid > 0                                          then 'partial'
                 else 'unpaid' end as status,
            coalesce(pend.method::text, lp.method::text) as method,
+           lp.received_on                     as paid_on,
+           -- Lease has not started yet, so there is nothing to bill this month
+           case when b.id is null
+                 and l.start_date > (v_period + interval '1 month' - interval '1 day')::date
+                then l.start_date end as starts_on,
            case when pend.id is not null then pend.amount else it.total - b.discount end as amount,
            case when pend.id is not null then jsonb_build_object(
                   'payment_id',   pend.id,
@@ -1596,9 +1604,17 @@ begin
       join profiles pr  on pr.id = l.tenant_id
       left join bills b on b.lease_id = l.id
        and (b.billing_period = v_period
-            or (b.bill_type = 'move_in' and exists (
-                  select 1 from payments pending_pay
-                   where pending_pay.bill_id = b.id and pending_pay.status = 'pending')))
+            -- A move-in bill stays on the ledger while it is unpaid, has a payment
+            -- waiting, or was paid this month, even if its own month is later.
+            or (b.bill_type = 'move_in' and (
+                  bill_balance(b.id) > 0
+                  or exists (
+                       select 1 from payments x
+                        where x.bill_id = b.id and x.status = 'pending')
+                  or exists (
+                       select 1 from payments x
+                        where x.bill_id = b.id and x.status = 'confirmed'
+                          and date_trunc('month', x.received_on)::date = v_period))))
       cross join lateral (select coalesce(sum(amount), 0) as total
                             from bill_items where bill_id = b.id) it
       cross join lateral (select coalesce(sum(amount), 0) as paid
@@ -1606,7 +1622,7 @@ begin
       left join lateral (select * from payments
                           where bill_id = b.id and status = 'pending'
                           order by created_at desc limit 1) pend on true
-      left join lateral (select method from payments
+      left join lateral (select method, received_on from payments
                           where bill_id = b.id and status = 'confirmed'
                           order by confirmed_at desc limit 1) lp on true
      where u.property_id = p_property
@@ -2237,3 +2253,354 @@ begin
 
   return v_lease.id;
 end $$;
+
+-- =====================================================================
+-- 011_monthly_bills.sql
+-- Creates the MONTHLY bills. Before this, only the move-in bill was ever
+-- created (in redeem_invite), so the Rent ledger showed "Not billed" forever.
+-- Safe to run more than once (create or replace + skips existing bills).
+-- =====================================================================
+
+-- Core worker. Makes one monthly bill per active lease for the given month,
+-- skipping leases that already have one. NOT callable from the app.
+create or replace function _generate_bills_for_period(p_period date, p_property uuid default null)
+returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  v_period date := date_trunc('month', p_period)::date;
+  r        record;
+  v_bill   uuid;
+  v_count  int := 0;
+begin
+  for r in
+    select l.id as lease_id, l.tenant_id, l.unit_id, u.property_id, pr.owner_id,
+           t.monthly_rent, t.due_day
+      from leases l
+      join units u       on u.id = l.unit_id
+      join properties pr on pr.id = u.property_id
+      -- the terms that apply to this month (latest one that has started)
+      join lateral (select monthly_rent, due_day
+                      from lease_terms
+                     where lease_id = l.id and effective_from <= v_period
+                     order by effective_from desc limit 1) t on true
+     where l.status = 'active'
+       and l.tenant_id is not null
+       and (p_property is null or u.property_id = p_property)
+       -- advance rent covers the first month, so billing starts the month after
+       and v_period >= (date_trunc('month', l.start_date)
+                        + case when l.advance_rent > 0 then interval '1 month'
+                               else interval '0 month' end)::date
+       and (l.end_date is null or v_period <= l.end_date)
+       and not exists (select 1 from bills b
+                        where b.lease_id = l.id
+                          and b.bill_type = 'monthly'
+                          and b.billing_period = v_period)
+  loop
+    v_bill := null;
+    insert into bills (lease_id, bill_type, billing_period, due_date, created_by)
+    values (r.lease_id, 'monthly', v_period, v_period + (r.due_day - 1), r.owner_id)
+    on conflict (lease_id, billing_period, bill_type) do nothing
+    returning id into v_bill;
+
+    if v_bill is null then continue; end if;   -- someone else just made it
+
+    insert into bill_items (bill_id, description, category, amount, sort_order)
+    values (v_bill, 'Monthly rent', 'rent', r.monthly_rent, 1);
+
+    -- Fixed recurring charges (association dues etc.). Variable charges
+    -- (electricity, water) have no amount yet, so they are not added here.
+    insert into bill_items (bill_id, description, category, amount, sort_order)
+    select v_bill, c.name, c.category, c.fixed_amount,
+           (1 + row_number() over (order by c.name))::smallint
+      from lease_charges c
+     where c.lease_id = r.lease_id and c.active and c.mode = 'fixed';
+
+    insert into notifications (recipient_id, type, title, body, bill_id, unit_id, property_id)
+    values (r.tenant_id, 'bill_issued', 'New bill',
+            'Your bill for ' || to_char(v_period, 'FMMonth YYYY') || ' is ready.',
+            v_bill, r.unit_id, r.property_id);
+
+    v_count := v_count + 1;
+  end loop;
+
+  return v_count;
+end $$;
+
+revoke all on function _generate_bills_for_period(date, uuid) from public, anon, authenticated;
+
+-- Landlord button: "Generate bills" for one month of their own property.
+-- Returns how many bills were created.
+create or replace function generate_monthly_bills(p_property uuid, p_month date default null)
+returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  v_today  date := (now() at time zone 'Asia/Manila')::date;
+  v_period date := date_trunc('month', coalesce(p_month, v_today))::date;
+begin
+  if not owns_property(p_property) then raise exception 'not_allowed'; end if;
+  if v_period > date_trunc('month', v_today)::date then raise exception 'future_month'; end if;
+  return _generate_bills_for_period(v_period, p_property);
+end $$;
+
+grant execute on function generate_monthly_bills(uuid, date) to authenticated;
+
+-- Automatic version for every property (used by the schedule below).
+create or replace function generate_all_monthly_bills() returns int
+language sql security definer set search_path = public as $$
+  select _generate_bills_for_period((now() at time zone 'Asia/Manila')::date, null) $$;
+
+revoke all on function generate_all_monthly_bills() from public, anon, authenticated;
+
+-- ---------------------------------------------------------------------
+-- OPTIONAL: make it automatic. First enable the pg_cron extension in the
+-- Supabase dashboard (Database > Extensions), then run this once.
+-- Runs every day at 00:05 Philippine time. It is safe to repeat: months that
+-- already have a bill are skipped, so new bills appear on the 1st.
+--
+-- select cron.schedule('aptify-monthly-bills', '5 16 * * *',
+--                      $$select generate_all_monthly_bills()$$);
+-- ---------------------------------------------------------------------
+
+
+-- =====================================================================
+-- 014_receipt_records.sql
+-- Permanent receipt records for the landlord.
+--
+-- The original `receipts` rows are deleted with the tenant's lease and
+-- payments. `receipt_records` is a self-contained snapshot (names, unit,
+-- amount, items are copied in), so it survives when:
+--   * the landlord removes a tenant
+--   * a tenant deletes their account
+-- It is only deleted if the landlord deletes their own account/property.
+-- Safe to run more than once.
+-- =====================================================================
+
+create table if not exists receipt_records (
+  id            uuid primary key default gen_random_uuid(),
+  property_id   uuid not null references properties(id) on delete cascade,
+  year          int  not null,
+  sequence_no   int  not null,
+  receipt_no    text generated always as ('OR-' || year::text || '-' || lpad(sequence_no::text, 4, '0')) stored,
+  issued_at     timestamptz not null default now(),
+
+  -- Links that are allowed to disappear (kept for tracing while they exist)
+  payment_id    uuid unique references payments(id) on delete set null,
+  tenant_id     uuid references profiles(id) on delete set null,
+
+  -- Snapshot: copied at the time of payment, never changes afterwards
+  tenant_name   text not null,
+  tenant_email  text,
+  unit_label    text not null,
+  property_name text not null,
+  bill_type     bill_type not null,
+  billing_period date not null,
+  amount        numeric(12,2) not null,
+  method        payment_method not null,
+  reference_no  text,
+  received_on   date not null,
+  bill_total    numeric(12,2) not null,
+  balance_after numeric(12,2) not null,
+  items         jsonb not null default '[]'::jsonb,
+
+  unique (property_id, year, sequence_no)
+);
+create index if not exists receipt_records_property_idx on receipt_records(property_id, issued_at desc);
+
+-- Landlords can only READ their own records. Nobody can edit or delete them
+-- from the app; only the functions below write to this table.
+alter table receipt_records enable row level security;
+drop policy if exists receipt_records_owner on receipt_records;
+create policy receipt_records_owner on receipt_records for select using (owns_property(property_id));
+revoke insert, update, delete on receipt_records from anon, authenticated;
+
+-- Issue a receipt AND save its permanent record.
+create or replace function _issue_receipt(p_payment uuid) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare v_prop uuid; v_year int := extract(year from now())::int; v_no int; v_id uuid;
+begin
+  select pr.id into v_prop
+    from payments pay join bills b on b.id = pay.bill_id join leases l on l.id = b.lease_id
+    join units u on u.id = l.unit_id join properties pr on pr.id = u.property_id
+   where pay.id = p_payment;
+
+  insert into receipt_counters (property_id, year, last_number) values (v_prop, v_year, 1)
+  on conflict (property_id, year) do update set last_number = receipt_counters.last_number + 1
+  returning last_number into v_no;
+
+  insert into receipts (payment_id, property_id, year, sequence_no)
+  values (p_payment, v_prop, v_year, v_no) returning id into v_id;
+
+  insert into receipt_records (
+    property_id, year, sequence_no, issued_at, payment_id, tenant_id,
+    tenant_name, tenant_email, unit_label, property_name,
+    bill_type, billing_period, amount, method, reference_no, received_on,
+    bill_total, balance_after, items)
+  select pr.id, v_year, v_no, now(), pay.id, pay.payer_id,
+         coalesce(nullif(trim(tp.first_name || ' ' || tp.last_name), ''), 'Unknown tenant'),
+         au.email, u.label, pr.name,
+         b.bill_type, b.billing_period, pay.amount, pay.method, pay.reference_no,
+         coalesce(pay.received_on, current_date),
+         (select coalesce(sum(bi.amount), 0) from bill_items bi where bi.bill_id = b.id) - b.discount,
+         bill_balance(b.id),
+         coalesce((select jsonb_agg(jsonb_build_object('description', bi.description, 'amount', bi.amount)
+                                    order by bi.sort_order)
+                     from bill_items bi where bi.bill_id = b.id), '[]'::jsonb)
+    from payments pay
+    join bills b       on b.id = pay.bill_id
+    join leases l      on l.id = b.lease_id
+    join units u       on u.id = l.unit_id
+    join properties pr on pr.id = u.property_id
+    left join profiles tp on tp.id = pay.payer_id
+    left join auth.users au on au.id = pay.payer_id
+   where pay.id = p_payment;
+
+  return v_id;
+end $$;
+revoke execute on function _issue_receipt(uuid) from public, anon, authenticated;
+
+-- Backfill: save a record for every receipt that already exists.
+insert into receipt_records (
+  property_id, year, sequence_no, issued_at, payment_id, tenant_id,
+  tenant_name, tenant_email, unit_label, property_name,
+  bill_type, billing_period, amount, method, reference_no, received_on,
+  bill_total, balance_after, items)
+select rc.property_id, rc.year, rc.sequence_no, rc.issued_at, pay.id, pay.payer_id,
+       coalesce(nullif(trim(tp.first_name || ' ' || tp.last_name), ''), 'Unknown tenant'),
+       au.email, u.label, pr.name,
+       b.bill_type, b.billing_period, pay.amount, pay.method, pay.reference_no,
+       coalesce(pay.received_on, rc.issued_at::date),
+       (select coalesce(sum(bi.amount), 0) from bill_items bi where bi.bill_id = b.id) - b.discount,
+       bill_balance(b.id),
+       coalesce((select jsonb_agg(jsonb_build_object('description', bi.description, 'amount', bi.amount)
+                                  order by bi.sort_order)
+                   from bill_items bi where bi.bill_id = b.id), '[]'::jsonb)
+  from receipts rc
+  join payments pay  on pay.id = rc.payment_id
+  join bills b       on b.id = pay.bill_id
+  join leases l      on l.id = b.lease_id
+  join units u       on u.id = l.unit_id
+  join properties pr on pr.id = rc.property_id
+  left join profiles tp on tp.id = pay.payer_id
+  left join auth.users au on au.id = pay.payer_id
+on conflict (property_id, year, sequence_no) do nothing;
+
+
+-- 015_receipt_records_access.sql
+-- Makes sure the app can READ receipt_records, and refreshes the API's table list.
+-- Safe to run more than once.
+
+grant select on receipt_records to authenticated;
+
+-- Tells Supabase's API (PostgREST) to reload its schema so the new table is visible
+notify pgrst, 'reload schema';
+
+
+-- =====================================================================
+-- 016_receipt_status.sql
+-- Each receipt record now also remembers HOW the payment settled the bill:
+--   fully_paid    the bill is fully paid and the money came on/before the due date
+--   paid_overdue  the bill is fully paid but the money came after the due date
+--   partial       some of the bill is still unpaid after this payment
+-- Decided once when the receipt is issued, so it never changes later.
+-- Safe to run more than once. (Do not re-run 014 after this: it would bring back
+-- the older _issue_receipt without the status.)
+-- =====================================================================
+
+alter table receipt_records add column if not exists due_date  date;
+alter table receipt_records add column if not exists pay_status text not null default 'fully_paid';
+alter table receipt_records drop constraint if exists receipt_records_pay_status_check;
+alter table receipt_records add constraint receipt_records_pay_status_check
+  check (pay_status in ('fully_paid', 'partial', 'paid_overdue'));
+
+create or replace function _issue_receipt(p_payment uuid) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare v_prop uuid; v_year int := extract(year from now())::int; v_no int; v_id uuid;
+begin
+  select pr.id into v_prop
+    from payments pay join bills b on b.id = pay.bill_id join leases l on l.id = b.lease_id
+    join units u on u.id = l.unit_id join properties pr on pr.id = u.property_id
+   where pay.id = p_payment;
+
+  insert into receipt_counters (property_id, year, last_number) values (v_prop, v_year, 1)
+  on conflict (property_id, year) do update set last_number = receipt_counters.last_number + 1
+  returning last_number into v_no;
+
+  insert into receipts (payment_id, property_id, year, sequence_no)
+  values (p_payment, v_prop, v_year, v_no) returning id into v_id;
+
+  insert into receipt_records (
+    property_id, year, sequence_no, issued_at, payment_id, tenant_id,
+    tenant_name, tenant_email, unit_label, property_name,
+    bill_type, billing_period, amount, method, reference_no, received_on,
+    bill_total, balance_after, items, due_date, pay_status)
+  select pr.id, v_year, v_no, now(), pay.id, pay.payer_id,
+         coalesce(nullif(trim(tp.first_name || ' ' || tp.last_name), ''), 'Unknown tenant'),
+         au.email, u.label, pr.name,
+         b.bill_type, b.billing_period, pay.amount, pay.method, pay.reference_no,
+         coalesce(pay.received_on, current_date),
+         (select coalesce(sum(bi.amount), 0) from bill_items bi where bi.bill_id = b.id) - b.discount,
+         bill_balance(b.id),
+         coalesce((select jsonb_agg(jsonb_build_object('description', bi.description, 'amount', bi.amount)
+                                    order by bi.sort_order)
+                     from bill_items bi where bi.bill_id = b.id), '[]'::jsonb),
+         b.due_date,
+         case when bill_balance(b.id) > 0                              then 'partial'
+              when coalesce(pay.received_on, current_date) > b.due_date then 'paid_overdue'
+              else 'fully_paid' end
+    from payments pay
+    join bills b       on b.id = pay.bill_id
+    join leases l      on l.id = b.lease_id
+    join units u       on u.id = l.unit_id
+    join properties pr on pr.id = u.property_id
+    left join profiles tp on tp.id = pay.payer_id
+    left join auth.users au on au.id = pay.payer_id
+   where pay.id = p_payment;
+
+  return v_id;
+end $$;
+revoke execute on function _issue_receipt(uuid) from public, anon, authenticated;
+
+-- Backfill existing records (uses the balance as it was at the time of that payment)
+update receipt_records rr
+   set due_date = b.due_date,
+       pay_status = case
+         when rr.bill_total - coalesce((select sum(x.amount) from payments x
+                                         where x.bill_id = b.id and x.status = 'confirmed'
+                                           and x.confirmed_at <= pay.confirmed_at), 0) > 0 then 'partial'
+         when rr.received_on > b.due_date then 'paid_overdue'
+         else 'fully_paid' end
+  from payments pay
+  join bills b on b.id = pay.bill_id
+ where pay.id = rr.payment_id and rr.due_date is null;
+
+-- Records whose payment no longer exists: judge by the saved balance
+update receipt_records
+   set pay_status = case when balance_after > 0 then 'partial' else 'fully_paid' end
+ where due_date is null and payment_id is null;
+
+
+-- =====================================================================
+-- 017_protect_receipt_records.sql
+-- Receipt records can only be deleted when the landlord deletes their own
+-- account (which deletes their property, and the records with it).
+-- Nothing else can remove one: not removing a tenant, not a tenant deleting
+-- their account, not any function or app query.
+-- Safe to run more than once.
+-- =====================================================================
+
+create or replace function _protect_receipt_records() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  -- While the property still exists, the record must stay.
+  -- When a property is deleted, its records are removed by the cascade and the
+  -- property row is already gone by then, so this lets that through.
+  if exists (select 1 from properties where id = old.property_id) then
+    raise exception 'receipt_records_protected';
+  end if;
+  return old;
+end $$;
+
+drop trigger if exists protect_receipt_records on receipt_records;
+create trigger protect_receipt_records
+  before delete on receipt_records
+  for each row execute function _protect_receipt_records();
