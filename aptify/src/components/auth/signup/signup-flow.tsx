@@ -1,5 +1,6 @@
 "use client";
 
+import { normalizePhone } from "@/lib/payments";
 import { useRef, useState } from "react";
 import { AuthShell } from "@/components/auth/auth-shell";
 import { createClient } from "@/lib/supabase/client";
@@ -87,7 +88,13 @@ export function SignupFlow({
       const { data, error } = await supabase.auth.signUp({
         email: account.email,
         password: account.password,
-        options: { data: { first_name: account.firstName, last_name: account.lastName } },
+        options: {
+          data: {
+            first_name: account.firstName,
+            last_name: account.lastName,
+            phone: normalizePhone(account.phone),
+          },
+        },
       });
 
       if (error) {
@@ -223,7 +230,13 @@ export function SignupFlow({
     const { data, error } = await createClient().auth.signUp({
       email: account.email,
       password: account.password,
-      options: { data: { first_name: account.firstName, last_name: account.lastName } },
+      options: {
+          data: {
+            first_name: account.firstName,
+            last_name: account.lastName,
+            phone: normalizePhone(account.phone),
+          },
+        },
     });
     if (error) return signUpErrorMessage(error);
 

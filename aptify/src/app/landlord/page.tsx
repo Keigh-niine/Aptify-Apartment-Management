@@ -96,7 +96,11 @@ export default async function OverviewPage() {
   const { supabase, user, property } = await getLandlordContext();
 
   const { data, error } = await supabase.rpc("landlord_overview", { p_property: property.id });
-  const month = new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const month = new Date().toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+    timeZone: "Asia/Manila",
+  });
 
   // Has the landlord added GCash / Maya details yet? (null if the table is missing)
   const { count: paymentAccounts } = await supabase

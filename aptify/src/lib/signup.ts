@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidPhone, normalizePhone } from "@/lib/payments";
 
 export type Role = "tenant" | "landlord";
 
@@ -7,6 +8,10 @@ export const accountSchema = z
     firstName: z.string().trim().min(1, "Enter your first name."),
     lastName: z.string().trim().min(1, "Enter your last name."),
     email: z.string().trim().email("Enter a valid email address."),
+    phone: z
+      .string()
+      .trim()
+      .refine((v) => isValidPhone(normalizePhone(v)), "Enter a valid mobile number, like 0917 123 4567."),
     password: z.string().min(8, "At least 8 characters."),
     confirmPassword: z.string(),
     role: z.enum(["tenant", "landlord"]),

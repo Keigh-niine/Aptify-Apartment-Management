@@ -1,3 +1,4 @@
+import { firstOfNextMonth } from "@/lib/dates";
 import { InviteWizard } from "@/components/landlord/units/invite-wizard";
 import { SiteButton } from "@/components/site-button";
 import { getLandlordContext } from "@/lib/landlord";
@@ -42,11 +43,8 @@ export default async function InvitePage({
     );
   }
 
-  // First day of next month, computed here so server and browser agree.
-  const now = new Date();
-  const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
-    .toISOString()
-    .slice(0, 10);
+  // First day of next month (Philippine time), computed here so server and browser agree.
+  const defaultStart = firstOfNextMonth();
 
   return (
     <InviteWizard

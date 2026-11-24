@@ -37,6 +37,7 @@ export function AccountStep({
       firstName: "",
       lastName: "",
       email: "",
+      phone: "",
       password: "",
       confirmPassword: "",
       role: initialRole,
@@ -80,6 +81,14 @@ export function AccountStep({
         placeholder="you@email.com"
         error={errors.email?.message}
         {...register("email")}
+      />
+      <Field
+        label="Mobile number"
+        type="tel"
+        autoComplete="tel"
+        placeholder="0917 123 4567"
+        error={errors.phone?.message}
+        {...register("phone")}
       />
       <Field
         label="Password"

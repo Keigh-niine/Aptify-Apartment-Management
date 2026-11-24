@@ -1,3 +1,4 @@
+import { manilaToday } from "@/lib/dates";
 export type Method = "cash" | "gcash" | "maya";
 export type BillLedgerStatus = "paid" | "pending" | "overdue" | "partial" | "unpaid";
 export type LedgerStatus = BillLedgerStatus | "unbilled";
@@ -140,6 +141,12 @@ export function shortDate(iso: string) {
   });
 }
 
+// "11-12-2026" (MM-DD-YYYY) from "2026-11-12"
+export function numericDate(iso: string) {
+  const [y, m, d] = iso.split("-");
+  return `${m}-${d}-${y}`;
+}
+
 // "Nov 12, 2026" from "2026-11-12"
 export function dateWithYear(iso: string) {
   return new Date(iso + "T00:00:00Z").toLocaleDateString("en-US", {
@@ -150,11 +157,9 @@ export function dateWithYear(iso: string) {
   });
 }
 
-// Today's date in the browser's timezone, as YYYY-MM-DD
+// Today's date in Philippine time, as YYYY-MM-DD
 export function todayLocal() {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  return manilaToday();
 }
 
 export function formatDateTime(iso: string) {

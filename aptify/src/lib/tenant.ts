@@ -1,3 +1,4 @@
+import { manilaToday } from "@/lib/dates";
 import { cache } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
@@ -93,8 +94,7 @@ export type TenantOverview =
 
 // Whole days from today until a YYYY-MM-DD date. Negative means it is overdue.
 export function daysUntil(iso: string) {
-  const t = new Date();
-  const today = Date.UTC(t.getFullYear(), t.getMonth(), t.getDate());
+  const today = Date.parse(manilaToday() + "T00:00:00Z");
   return Math.round((Date.parse(iso + "T00:00:00Z") - today) / 86_400_000);
 }
 

@@ -1,3 +1,4 @@
+import { addDaysISO, manilaToday } from "@/lib/dates";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
@@ -8,7 +9,7 @@ import { UUID_RE, type PayAccount, type PayInfo } from "@/lib/tenant-payments";
 export const instant = false;
 
 function tomorrowISO() {
-  return new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  return addDaysISO(manilaToday(), 1);
 }
 
 export default async function PayPage({
