@@ -33,7 +33,7 @@ export default async function AnnouncementsPage() {
 
       {announcementsRes.error ? (
         <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
-          Couldn&apos;t load announcements. ({announcementsRes.error.message})
+          Couldn&apos;t load announcements. Please refresh and try again.
         </p>
       ) : (
         <AnnouncementsBoard propertyId={property.id} items={items} units={units} />

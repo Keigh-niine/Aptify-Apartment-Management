@@ -26,13 +26,14 @@ export default async function PayPage({
 
   if (error) {
     if (error.message.includes("not_allowed")) notFound();
+    console.error("tenant_pay_info failed:", error.message);
     return (
       <div className="flex flex-col gap-2">
         <h1 className="text-[30px] font-bold text-slate-900">Pay bill</h1>
         <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
           {error.message.includes("no_lease")
             ? "Join a unit before paying a bill."
-            : `Couldn't load this bill. Make sure 014_tenant_payments.sql was run in Supabase. (${error.message})`}
+            : "Couldn't load this bill. Please refresh and try again."}
         </p>
       </div>
     );

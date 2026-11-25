@@ -2,8 +2,8 @@ import Link from "next/link";
 import { connection } from "next/server";
 import { RpcButton } from "@/components/landlord/rpc-button";
 import { formatPeso } from "@/lib/format";
+import { ago } from "@/lib/time";
 import {
-  ago,
   getLandlordContext,
   type AttentionItem,
   type OverviewAnnouncement,
@@ -109,12 +109,12 @@ export default async function OverviewPage() {
     .eq("owner_id", user.id);
 
   if (error || !data) {
+    if (error) console.error("landlord overview failed:", error.message);
     return (
       <div className="flex flex-col gap-2">
         <h1 className="text-[30px] font-bold text-slate-900">Overview</h1>
         <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
-          Couldn&apos;t load the overview. Make sure you ran 003_landlord_overview.sql in Supabase.
-          {error ? ` (${error.message})` : ""}
+          Couldn&apos;t load the overview. Please refresh and try again.
         </p>
       </div>
     );

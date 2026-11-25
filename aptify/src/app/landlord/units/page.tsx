@@ -21,8 +21,7 @@ export default async function UnitsPage() {
 
       {error || !data ? (
         <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
-          Couldn&apos;t load your units. Make sure you ran 004_units_and_invites.sql in Supabase.
-          {error ? ` (${error.message})` : ""}
+          Couldn&apos;t load your units. Please refresh and try again.
         </p>
       ) : (
         <UnitsTable rows={sortRows(data as UnitRow[])} />

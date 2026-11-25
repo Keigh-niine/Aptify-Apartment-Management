@@ -10,12 +10,12 @@ export default async function RentLedgerPage() {
   const { data, error } = await supabase.rpc("landlord_ledger", { p_property: property.id });
 
   if (error || !data) {
+    if (error) console.error("landlord_ledger failed:", error.message);
     return (
       <div className="flex flex-col gap-2">
         <h1 className="text-[30px] font-bold text-slate-900">Rent ledger</h1>
         <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
-          Couldn&apos;t load the rent ledger. Make sure you ran 010_rent_ledger.sql in Supabase.
-          {error ? ` (${error.message})` : ""}
+          Couldn&apos;t load the rent ledger. Please refresh and try again.
         </p>
       </div>
     );
@@ -60,13 +60,15 @@ export default async function RentLedgerPage() {
     .order("issued_at", { ascending: false })
     .limit(500);
 
+  if (receiptsError) console.error("receipt_records failed:", receiptsError.message);
+
   return (
     <LedgerBoard
       data={withUrls}
       propertyId={property.id}
       propertyName={property.name}
       receipts={(receiptRows ?? []) as ReceiptRecord[]}
-      receiptsError={receiptsError?.message ?? null}
+      receiptsError={receiptsError ? "load_failed" : null}
     />
   );
 }

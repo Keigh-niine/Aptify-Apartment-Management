@@ -158,12 +158,12 @@ export default async function TenantHomePage() {
   const { overview, overviewError } = await getTenantContext();
 
   if (overviewError || !overview) {
+    if (overviewError) console.error("tenant_overview failed:", overviewError);
     return (
       <div className="flex flex-col gap-2">
         <h1 className="text-[30px] font-bold text-slate-900">My Home</h1>
         <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
-          Couldn&apos;t load your home screen. Make sure 011_tenant_overview.sql was run in Supabase.
-          {overviewError ? ` (${overviewError})` : ""}
+          Couldn&apos;t load your home screen. Please refresh and try again.
         </p>
       </div>
     );

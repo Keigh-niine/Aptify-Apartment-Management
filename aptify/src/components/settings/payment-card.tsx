@@ -182,13 +182,8 @@ export function PaymentCard({
       toast("ok", "Payment details saved.");
       router.refresh();
     } catch (err) {
-      const code = (err as { code?: string } | null)?.code;
-      toast(
-        "err",
-        code === "42P01"
-          ? "Payment details aren't set up in your database yet. Run 006_payment_accounts.sql in Supabase."
-          : "Couldn't save your payment details. Please try again."
-      );
+      console.error("Saving payment details failed:", err);
+      toast("err", "Couldn't save your payment details. Please try again.");
     } finally {
       setSaving(false);
     }

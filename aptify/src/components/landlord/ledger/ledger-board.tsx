@@ -302,7 +302,7 @@ function ReceiptsTable({
 
       {error ? (
         <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
-          Couldn&apos;t load the payment history. Make sure you ran 014 and 016 in Supabase. ({error})
+          Couldn&apos;t load the payment history. Please refresh and try again.
         </p>
       ) : receipts.length === 0 ? (
         <p className="rounded-2xl border border-slate-200 bg-white px-6 py-8 text-center text-sm text-slate-500">

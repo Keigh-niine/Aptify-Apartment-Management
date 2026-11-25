@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
 import { accountSchema, type AccountValues, type Role } from "@/lib/signup";
@@ -28,7 +28,7 @@ export function AccountStep({
   const {
     register,
     handleSubmit,
-    watch,
+    control,
     setError,
     formState: { errors },
   } = useForm<AccountValues>({
@@ -48,7 +48,7 @@ export function AccountStep({
     if (emailError) setError("email", { message: emailError });
   }, [emailError, setError]);
 
-  const role = watch("role");
+  const role = useWatch({ control, name: "role" });
 
   return (
     <form onSubmit={handleSubmit(onNext)} noValidate className="flex w-full max-w-[400px] flex-col gap-5">

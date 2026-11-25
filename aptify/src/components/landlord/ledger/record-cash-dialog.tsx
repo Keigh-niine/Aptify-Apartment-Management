@@ -6,7 +6,7 @@ import { inputClass, Labeled, MoneyInput } from "@/components/landlord/units/ui"
 import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
 import { formatPeso } from "@/lib/format";
-import { monthTitle, receiptNo, todayLocal, type BillLedgerRow } from "@/lib/ledger";
+import { monthTitle, todayLocal, type BillLedgerRow } from "@/lib/ledger";
 import { shortLabel } from "@/lib/signup";
 import { createClient } from "@/lib/supabase/client";
 import { fmtMoney, parseMoney } from "@/lib/units";

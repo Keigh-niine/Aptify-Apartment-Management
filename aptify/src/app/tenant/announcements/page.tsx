@@ -8,6 +8,7 @@ export default async function TenantAnnouncementsPage() {
 
   const { data, error } = await supabase.rpc("tenant_announcements");
   const items = (data ?? []) as TenantAnnouncement[];
+  if (error) console.error("tenant_announcements failed:", error.message);
 
   return (
     <div className="flex flex-col gap-6">
@@ -18,8 +19,7 @@ export default async function TenantAnnouncementsPage() {
 
       {error ? (
         <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
-          Couldn&apos;t load announcements. Make sure 012_tenant_announcements.sql was run in
-          Supabase. ({error.message})
+          Couldn&apos;t load announcements. Please refresh and try again.
         </p>
       ) : overview && !overview.has_lease ? (
         <p className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500">

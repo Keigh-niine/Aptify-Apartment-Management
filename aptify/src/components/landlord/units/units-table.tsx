@@ -1,4 +1,4 @@
-import { ago } from "@/lib/landlord";
+import { ago } from "@/lib/time";
 import { formatPeso } from "@/lib/format";
 import { shortLabel } from "@/lib/signup";
 import { expiresIn, rowKind, type RowKind, type UnitRow } from "@/lib/units";

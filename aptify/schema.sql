@@ -2604,3 +2604,58 @@ drop trigger if exists protect_receipt_records on receipt_records;
 create trigger protect_receipt_records
   before delete on receipt_records
   for each row execute function _protect_receipt_records();
+
+
+
+  -- =====================================================================
+-- HARDENING PATCH  (run once in the Supabase SQL editor, ideally on a
+-- staging copy first, then re-test login, signup with an invite code,
+-- paying a bill and confirming a payment)
+-- =====================================================================
+
+-- 1. FUNCTION PERMISSIONS ---------------------------------------------
+-- Postgres lets everyone run a new function, and Supabase also grants it to anon
+-- by default. Signed-out visitors should only be able to run preview_invite.
+revoke execute on all functions in schema public from public, anon;
+
+-- Everyone signed in keeps access (RLS policies and RPCs rely on it)...
+grant execute on all functions in schema public to authenticated;
+
+-- ...except the internal helpers that were deliberately locked down earlier.
+revoke execute on function _issue_receipt(uuid)             from authenticated;
+revoke execute on function _delete_lease_records(uuid)      from authenticated;
+revoke execute on function _purge_user(uuid)                from authenticated;
+revoke execute on function _request_ip()                    from authenticated;
+revoke execute on function _invite_blocked(text[])          from authenticated;
+revoke execute on function _invite_fail(text[])             from authenticated;
+revoke execute on function _generate_bills_for_period(date, uuid) from authenticated;
+revoke execute on function generate_all_monthly_bills()     from authenticated;
+
+-- The one function signed-out visitors need (invite preview on the signup page).
+grant execute on function preview_invite(text, text) to anon;
+
+-- Future functions created in this schema start locked down.
+alter default privileges in schema public revoke execute on functions from public, anon;
+
+-- 2. RECEIPT SCREENSHOTS ----------------------------------------------
+-- Before: tenants could delete or overwrite their own receipt at any time, even
+-- after the landlord confirmed the payment. Now they can upload and view their
+-- own receipts, and delete one only if no pending or confirmed payment uses it.
+drop policy if exists "payment receipts: tenant manage" on storage.objects;
+
+create policy "payment receipts: tenant view" on storage.objects for select to authenticated
+  using (bucket_id = 'payment-receipts' and public.receipt_owner_id(name) = auth.uid());
+
+create policy "payment receipts: tenant upload" on storage.objects for insert to authenticated
+  with check (bucket_id = 'payment-receipts' and public.receipt_owner_id(name) = auth.uid());
+
+create policy "payment receipts: tenant delete unused" on storage.objects for delete to authenticated
+  using (
+    bucket_id = 'payment-receipts'
+    and public.receipt_owner_id(name) = auth.uid()
+    and not exists (
+      select 1 from public.payments p
+       where p.receipt_path = storage.objects.name
+         and p.status in ('pending', 'confirmed')
+    )
+  );

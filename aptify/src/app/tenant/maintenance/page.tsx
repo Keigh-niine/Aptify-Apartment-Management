@@ -57,7 +57,7 @@ export default async function TenantMaintenancePage({
 
       {error && (
         <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
-          Couldn&apos;t load your requests. ({error.message})
+          Couldn&apos;t load your requests. Please refresh and try again.
         </p>
       )}
 

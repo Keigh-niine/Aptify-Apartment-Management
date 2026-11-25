@@ -27,13 +27,8 @@ export function GenerateBillsButton({
     setLoading(false);
 
     if (error) {
-      const missing = error.message.includes("generate_monthly_bills");
-      setMessage({
-        ok: false,
-        text: missing
-          ? "Run 011_monthly_bills.sql in Supabase first."
-          : `Couldn't create bills (${error.message}).`,
-      });
+      console.error("generate_monthly_bills failed:", error.message);
+      setMessage({ ok: false, text: "Couldn't create bills. Please try again." });
       return;
     }
 

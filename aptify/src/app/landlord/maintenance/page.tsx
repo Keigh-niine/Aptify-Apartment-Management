@@ -17,11 +17,10 @@ export default async function MaintenancePage({
   let body: React.ReactNode;
 
   if (error || !data) {
+    if (error) console.error("landlord_maintenance failed:", error.message);
     body = (
       <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
-        Couldn&apos;t load maintenance requests. Make sure you ran 005_landlord_maintenance.sql in
-        Supabase.
-        {error ? ` (${error.message})` : ""}
+        Couldn&apos;t load maintenance requests. Please refresh and try again.
       </p>
     );
   } else {

@@ -17,10 +17,10 @@ export default async function InvitePage({
   const { data, error } = await supabase.rpc("landlord_units", { p_property: property.id });
 
   if (error || !data) {
+    if (error) console.error("landlord_units failed:", error.message);
     return (
       <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
-        Couldn&apos;t load your units. Make sure you ran 004_units_and_invites.sql in Supabase.
-        {error ? ` (${error.message})` : ""}
+        Couldn&apos;t load your units. Please refresh and try again.
       </p>
     );
   }
