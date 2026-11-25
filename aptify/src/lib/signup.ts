@@ -114,5 +114,19 @@ export function signUpErrorMessage(error: { code?: string; message?: string }) {
   if (error.code === "weak_password") {
     return "That password is too weak. Use at least 8 characters.";
   }
-  return "We couldn't create your account. Please try again.";
+  if (error.code === "email_address_not_authorized") {
+    return "Supabase's built-in email sender can only email project team members. Set up custom SMTP in Supabase (Authentication > Emails > SMTP Settings), or sign up with a team member's email.";
+  }
+  if (error.code === "email_address_invalid") {
+    return "That email address isn't accepted. Use a real email address.";
+  }
+  if (error.code === "signup_disabled" || error.code === "email_provider_disabled") {
+    return "Sign ups are turned off in Supabase (Authentication > Sign In / Providers).";
+  }
+  const base = "We couldn't create your account. Please try again.";
+  // While developing, show Supabase's real reason so it can be fixed. Hidden in production.
+  if (process.env.NODE_ENV !== "production") {
+    return `${base} [${error.code ?? "no code"}: ${error.message ?? "no message"}]`;
+  }
+  return base;
 }

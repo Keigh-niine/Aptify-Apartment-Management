@@ -58,8 +58,11 @@ export type LedgerData = {
   month: string;
   rows: LedgerRow[];
   rent_received_pct: number | null;
+  // Peso totals for the monthly bills of this month. Missing until ledger-update.sql is run.
+  rent_expected?: number;
+  rent_collected?: number;
   pending_count: number;
-  open_repairs: number;
+  pending_amount?: number; // peso total of payments waiting for confirmation
   next_receipt_year: number;
   next_receipt_number: number;
 };

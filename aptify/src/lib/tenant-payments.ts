@@ -11,6 +11,9 @@ export type CurrentBill = {
   balance: number;
   item_names: string[];
   pending: { payment_id: string; amount: number; method: PayMethod; created_at: string } | null;
+  is_past?: boolean; // its month has ended
+  in_unpaid?: boolean; // partly paid, or its month has ended
+  days_overdue?: number;
   rejected: {
     reason: "not_received" | "wrong_amount" | "other";
     message: string | null;
@@ -37,6 +40,7 @@ export type PaymentsData =
       unit_label: string;
       property_name: string;
       current_bill: CurrentBill | null;
+      unpaid_bills?: CurrentBill[]; // missing until tenant-unpaid-update.sql is run
       history: HistoryRow[];
     };
 

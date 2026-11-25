@@ -4,9 +4,34 @@ import { createClient } from "@/lib/supabase/server";
 
 const MAX_TITLE_LENGTH = 120;
 const MAX_DESCRIPTION_LENGTH = 2000;
+const AI_TIMEOUT_MS = 15_000;
+const RATE_LIMIT_MAX = 10; // requests per user
+const RATE_LIMIT_WINDOW_MS = 10 * 60_000; // per 10 minutes
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 const DESCRIPTION_SYSTEM_INSTRUCTION =
   "Write a concise maintenance request description in 1 to 3 sentences. Use only facts present in the title, category, and urgency. Return only the description.";
+
+// Best-effort, per-instance limiter. On Vercel each serverless instance keeps its own
+// memory, so this slows abuse down but does not strictly cap it. For a hard limit, count
+// requests in the database or use a shared store such as Upstash Redis.
+const recentRequests = new Map<string, number[]>();
+
+function isRateLimited(userId: string) {
+  const now = Date.now();
+  const recent = (recentRequests.get(userId) ?? []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (recent.length >= RATE_LIMIT_MAX) {
+    recentRequests.set(userId, recent);
+    return true;
+  }
+  recent.push(now);
+  recentRequests.set(userId, recent);
+  if (recentRequests.size > 5_000) {
+    for (const [id, times] of recentRequests) {
+      if (times.every((t) => now - t >= RATE_LIMIT_WINDOW_MS)) recentRequests.delete(id);
+    }
+  }
+  return false;
+}
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -17,6 +42,13 @@ export async function POST(request: NextRequest) {
 
   if (authError || !user) {
     return NextResponse.json({ error: "Please sign in to use this feature." }, { status: 401 });
+  }
+
+  if (isRateLimited(user.id)) {
+    return NextResponse.json(
+      { error: "You've asked for a lot of descriptions. Please wait a few minutes." },
+      { status: 429 }
+    );
   }
 
   let body: unknown;
@@ -93,7 +125,7 @@ export async function POST(request: NextRequest) {
           maxOutputTokens: 300,
         },
       }),
-      signal: AbortSignal.timeout(300_000),
+      signal: AbortSignal.timeout(AI_TIMEOUT_MS),
     });
   } catch (error) {
     console.error("Gemini request failed.", error);
@@ -104,7 +136,12 @@ export async function POST(request: NextRequest) {
   }
 
   if (!aiResponse.ok) {
-    console.error("Gemini returned an unsuccessful response.", aiResponse.status);
+    // Google's error body says exactly what went wrong (unknown model, bad key, quota...).
+    const detail = await aiResponse.text().catch(() => "");
+    console.error(
+      `Gemini returned an unsuccessful response. status=${aiResponse.status} model=${model}`,
+      detail.slice(0, 500)
+    );
     return NextResponse.json(
       { error: "The AI service couldn't write a description. Please try again." },
       { status: 502 }

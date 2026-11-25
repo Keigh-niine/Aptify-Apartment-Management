@@ -30,14 +30,17 @@ type Tab = "all" | "pending" | "overdue";
 const cols =
   "grid grid-cols-[minmax(150px,240px)_80px_110px_110px_150px_1fr] items-center gap-4";
 
-function Stat({ value, label }: { value: string; label: string }) {
+function Stat({ value, label, note }: { value: string; label: string; note?: string }) {
   return (
     <div className="flex flex-col gap-1 rounded-2xl border border-slate-200 bg-white p-5">
       <p className="text-[32px] font-bold text-slate-900">{value}</p>
       <p className="text-sm text-slate-500">{label}</p>
+      {note && <p className="text-xs text-slate-500">{note}</p>}
     </div>
   );
 }
+
+const peso = (n: number) => formatPeso(n).replace(/\.00$/, "");
 
 const receiptCols =
   "grid grid-cols-[140px_120px_minmax(150px,240px)_70px_90px_130px_1fr] items-center gap-4";
@@ -389,6 +392,21 @@ export function LedgerBoard({
   const pendingCount = rows.filter((r) => r.status === "pending").length;
   const overdueCount = rows.filter((r) => r.status === "overdue").length;
   const shown = rows.filter((r) => tab === "all" || r.status === tab);
+  const overdueAmount = rows.reduce(
+    (sum, r) => (r.status === "overdue" ? sum + Number(r.balance) : sum),
+    0
+  );
+  const expected = Number(data.rent_expected ?? 0);
+  const collected = Number(data.rent_collected ?? 0);
+  const pendingAmount = Number(data.pending_amount ?? 0);
+  const rentNote =
+    data.rent_received_pct === null
+      ? unbilledCount > 0
+        ? "No bills generated for this month yet"
+        : "No monthly rent bills this month"
+      : data.rent_expected === undefined
+        ? undefined
+        : `${peso(collected)} of ${peso(expected)}`;
 
   // Looked up by id so the dialog always shows fresh data after a refresh
   const reviewing =
@@ -437,9 +455,18 @@ export function LedgerBoard({
         <Stat
           value={data.rent_received_pct === null ? "—" : `${data.rent_received_pct}%`}
           label="Rent received"
+          note={rentNote}
         />
-        <Stat value={String(data.pending_count)} label="Pending payments" />
-        <Stat value={String(data.open_repairs)} label="Open repairs" />
+        <Stat
+          value={String(data.pending_count)}
+          label="Pending payments"
+          note={pendingAmount > 0 ? `${peso(pendingAmount)} awaiting your confirmation` : undefined}
+        />
+        <Stat
+          value={String(overdueCount)}
+          label="Overdue"
+          note={overdueCount > 0 ? `${peso(overdueAmount)} past due` : undefined}
+        />
       </div>
 
       {rows.length > 0 && (
@@ -525,6 +552,11 @@ export function LedgerBoard({
                     </span>
                     {r.status === "paid" && r.paid_on && (
                       <span className="text-xs text-slate-500">on {shortDate(r.paid_on)}</span>
+                    )}
+                    {r.status !== "unbilled" && Number(r.paid) > 0 && Number(r.balance) > 0 && (
+                      <span className="text-xs text-slate-500">
+                        {peso(Number(r.paid))} paid · {peso(Number(r.balance))} left
+                      </span>
                     )}
                   </span>
                   <span className="flex justify-end gap-2">

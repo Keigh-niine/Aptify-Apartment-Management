@@ -15,6 +15,16 @@ const dueDate = (iso: string) =>
     timeZone: "UTC",
   });
 
+// "2026-11-12" -> "11/12/2026"
+const slashDate = (iso: string) => {
+  const [y, m, d] = iso.split("-");
+  return `${m}/${d}/${y}`;
+};
+
+// "2026-11-24T09:15:00+00:00" -> "11/24/2026" in Philippine time (same format as the Unpaid bills dates)
+const paidDate = (ts: string) =>
+  slashDate(new Date(ts).toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }));
+
 function statusChip(h: HistoryRow) {
   if (h.status === "confirmed") return { text: "Paid", cls: "bg-green-100 text-green-800" };
   if (h.status === "rejected") return { text: "Rejected", cls: "bg-red-100 text-red-800" };
@@ -53,6 +63,9 @@ export default async function TenantPaymentsPage() {
   }
 
   const b = p.current_bill;
+  const unpaid = p.unpaid_bills ?? [];
+  const unpaidTotal = unpaid.reduce((sum, u) => sum + Number(u.balance), 0);
+  const hasOverdue = unpaid.some((u) => u.is_past);
   const days = b ? daysUntil(b.due_date) : 0;
   const overdue = !!b && days < 0;
   const chip = !b
@@ -121,14 +134,112 @@ export default async function TenantPaymentsPage() {
             </p>
           )}
         </section>
-      ) : (
+      ) : unpaid.length === 0 ? (
         <section className="flex flex-col gap-1 rounded-2xl bg-green-100 p-6">
           <p className="text-[15px] font-semibold text-green-800">You&apos;re all paid up</p>
           <p className="text-sm text-green-800">
             Nothing is due right now. Your next bill appears here when your landlord creates it.
           </p>
         </section>
+      ) : (
+        <section className="flex flex-col gap-1 rounded-2xl border border-slate-200 bg-white p-6">
+          <p className="text-[15px] font-semibold text-slate-900">Nothing else is due this month</p>
+          <p className="text-sm text-slate-500">Please settle your unpaid bills below.</p>
+        </section>
       )}
+
+      {/* Unpaid bills: bills you've partly paid and bills from months that have ended */}
+      <section
+        className={`flex flex-col gap-4 rounded-2xl border bg-white p-6 ${
+          hasOverdue ? "border-red-200" : unpaid.length > 0 ? "border-amber-200" : "border-slate-200"
+        }`}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="flex flex-col gap-1">
+            <h2 className="text-lg font-bold text-slate-900">Unpaid bills</h2>
+            <p className="text-sm text-slate-500">
+              Bills you&apos;ve partly paid and bills from past months. A balance that isn&apos;t paid
+              by the end of its month becomes overdue.
+            </p>
+          </div>
+          {unpaid.length > 0 && (
+            <div className="flex flex-col items-end">
+              <p className="text-xs text-slate-500">Total unpaid</p>
+              <p className={`text-xl font-bold ${hasOverdue ? "text-red-800" : "text-slate-900"}`}>
+                {formatPeso(unpaidTotal)}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {unpaid.length === 0 ? (
+          <p className="rounded-[10px] bg-slate-50 px-4 py-3 text-sm text-slate-500">
+            You have no unpaid bills. If you pay part of a bill, or a month ends with a balance
+            left, that bill will be listed here so you can finish paying it.
+          </p>
+        ) : (
+          /* Fixed-height table: scroll up and down when there are many bills */
+          <div className="max-h-[22rem] overflow-auto">
+            <div className="min-w-[760px]">
+              <div className="sticky top-0 z-10 grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr_1.6fr] gap-4 rounded-lg bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-500">
+                <span>Due date</span>
+                <span>Total</span>
+                <span>Paid</span>
+                <span>Balance</span>
+                <span>Status</span>
+                <span />
+              </div>
+              {unpaid.map((u) => {
+                const uChip = u.pending
+                  ? { text: "Payment pending", cls: "bg-amber-100 text-amber-800" }
+                  : u.is_past
+                    ? { text: "Overdue", cls: "bg-red-100 text-red-800" }
+                    : { text: "Partial", cls: "bg-sky-100 text-sky-700" };
+                const note = u.pending
+                  ? "Waiting for your landlord to confirm"
+                  : u.is_past && Number(u.days_overdue) > 0
+                    ? `${u.days_overdue} day${u.days_overdue === 1 ? "" : "s"} overdue`
+                    : null;
+                return (
+                  <div key={u.bill_id} className="border-b border-slate-100 px-3 py-3 last:border-b-0">
+                    <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr_1.6fr] items-center gap-4 text-sm">
+                      <span className="flex flex-col">
+                        <span className="font-semibold text-slate-900">
+                          {slashDate(u.due_date)}
+                          {u.bill_type === "move_in" ? " (move-in)" : ""}
+                        </span>
+                        {note && <span className="text-xs text-slate-500">{note}</span>}
+                      </span>
+                      <span className="text-slate-900">{formatPeso(Number(u.total_due))}</span>
+                      <span className="text-slate-900">{formatPeso(Number(u.paid))}</span>
+                      <span className="font-semibold text-slate-900">{formatPeso(Number(u.balance))}</span>
+                      <span>
+                        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${uChip.cls}`}>
+                          {uChip.text}
+                        </span>
+                      </span>
+                      <span className="flex justify-end">
+                        {!u.pending && (
+                          <SiteButton href={`/tenant/payments/pay?bill=${u.bill_id}`} className="whitespace-nowrap">
+                            Proceed to payment
+                          </SiteButton>
+                        )}
+                      </span>
+                    </div>
+                    {u.rejected && !u.pending && (
+                      <p className="mt-2 rounded-[10px] bg-red-100 px-3 py-2 text-xs font-medium text-red-800">
+                        Your landlord couldn&apos;t confirm your last payment of{" "}
+                        {formatPeso(Number(u.rejected.amount))}. {rejectionText[u.rejected.reason]}{" "}
+                        {u.rejected.message ? `“${u.rejected.message}”` : ""}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* History */}
       <section className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-6">
@@ -136,10 +247,10 @@ export default async function TenantPaymentsPage() {
         {p.history.length === 0 ? (
           <p className="py-2 text-sm text-slate-500">No payments yet.</p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="max-h-[22rem] overflow-auto">
             <div className="min-w-[640px]">
-              <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr] gap-4 rounded-lg bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-500">
-                <span>Month</span>
+              <div className="sticky top-0 z-10 grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr] gap-4 rounded-lg bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-500">
+                <span>Date</span>
                 <span>Amount</span>
                 <span>Method</span>
                 <span>Status</span>
@@ -153,7 +264,7 @@ export default async function TenantPaymentsPage() {
                     className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr] items-center gap-4 border-b border-slate-100 px-3 py-3 text-sm last:border-b-0"
                   >
                     <span className="font-semibold text-slate-900">
-                      {monthTitle(h.billing_period)}
+                      {paidDate(h.created_at)}
                       {h.bill_type === "move_in" ? " (move-in)" : ""}
                     </span>
                     <span className="text-slate-900">{formatPeso(Number(h.amount))}</span>
