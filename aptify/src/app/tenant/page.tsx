@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { connection } from "next/server";
 import { SiteButton } from "@/components/site-button";
+import { JoinUnitForm } from "@/components/tenant/join-unit-form";
 import { formatPeso } from "@/lib/format";
 import { methodLabel, monthTitle } from "@/lib/ledger";
 import {
@@ -176,9 +177,12 @@ export default async function TenantHomePage() {
         <div className="flex flex-col gap-1 rounded-2xl border border-slate-200 bg-white p-6">
           <p className="text-lg font-bold text-slate-900">You&apos;re not linked to a unit yet</p>
           <p className="text-sm text-slate-500">
-            Ask your landlord for an invite code. Once you join a unit, your rent, repairs and
+            Enter the invite code from your landlord. Once you join a unit, your rent, repairs and
             announcements show up here.
           </p>
+          <div className="mt-3">
+            <JoinUnitForm />
+          </div>
         </div>
       </div>
     );
