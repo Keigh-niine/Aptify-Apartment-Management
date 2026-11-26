@@ -399,8 +399,18 @@ export function LedgerBoard({
   const expected = Number(data.rent_expected ?? 0);
   const collected = Number(data.rent_collected ?? 0);
   const pendingAmount = Number(data.pending_amount ?? 0);
-  const rentNote =
-    data.rent_received_pct === null
+  // Money received this month (any confirmed payment). Falls back to the old % card until 021 is run.
+  const hasReceived = data.rent_received !== undefined;
+  const rentValue = hasReceived
+    ? peso(Number(data.rent_received))
+    : data.rent_received_pct === null
+      ? "—"
+      : `${data.rent_received_pct}%`;
+  const rentNote = hasReceived
+    ? data.rent_received_pct === null
+      ? "Payments received this month"
+      : `${data.rent_received_pct}% of ${peso(expected)} monthly rent billed`
+    : data.rent_received_pct === null
       ? unbilledCount > 0
         ? "No bills generated for this month yet"
         : "No monthly rent bills this month"
@@ -452,11 +462,7 @@ export function LedgerBoard({
       )}
 
       <div className="grid gap-5 sm:grid-cols-3">
-        <Stat
-          value={data.rent_received_pct === null ? "—" : `${data.rent_received_pct}%`}
-          label="Rent received"
-          note={rentNote}
-        />
+        <Stat value={rentValue} label="Rent received" note={rentNote} />
         <Stat
           value={String(data.pending_count)}
           label="Pending payments"

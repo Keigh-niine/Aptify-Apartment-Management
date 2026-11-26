@@ -265,7 +265,6 @@ export default async function TenantPaymentsPage() {
                   >
                     <span className="font-semibold text-slate-900">
                       {paidDate(h.created_at)}
-                      {h.bill_type === "move_in" ? " (move-in)" : ""}
                     </span>
                     <span className="text-slate-900">{formatPeso(Number(h.amount))}</span>
                     <span className="text-slate-900">{methodLabel[h.method]}</span>

@@ -50,6 +50,7 @@ export type OverviewAnnouncement = {
 
 export type OverviewData = {
   rent_received_pct: number | null;
+  rent_received?: number; // all confirmed payments received this month (missing until 021 is run)
   pending_cash: number;
   open_repairs: number;
   vacant_units: number;

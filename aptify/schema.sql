@@ -2867,3 +2867,279 @@ begin
                limit 24) h), '[]'::jsonb)
   );
 end $$;
+
+
+
+-- =====================================================================
+-- 021_rent_received.sql
+-- "Rent received" on the Overview and the Rent ledger now shows the MONEY received
+-- in the month (every confirmed payment, including move-in payments), not only a
+-- percentage of monthly rent bills. Before, it showed "-" until monthly bills existed.
+--
+-- This replaces landlord_ledger and landlord_overview. landlord_ledger also keeps the
+-- peso totals from your ledger update (rent_expected, rent_collected, pending_amount)
+-- and everything from 012/018 (paid date, "Starts ..." status, move-in rows, Manila time).
+-- Safe to run more than once.
+-- =====================================================================
+
+create or replace function ph_today() returns date
+language sql stable as $$ select (now() at time zone 'Asia/Manila')::date $$;
+
+create or replace function landlord_ledger(p_property uuid, p_month date default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_period  date := date_trunc('month', coalesce(p_month, ph_today()))::date;
+  v_year    int  := extract(year from ph_today())::int;
+  v_total   numeric;
+  v_paid    numeric;
+  v_pending int;
+  v_pending_amt numeric;
+  v_received numeric;
+  v_repairs int;
+  v_next    int;
+  v_rows    jsonb;
+begin
+  if not owns_property(p_property) then raise exception 'not_allowed'; end if;
+
+  select coalesce(jsonb_agg(to_jsonb(r)), '[]'::jsonb) into v_rows
+  from (
+    select l.id as lease_id, b.id as bill_id, b.bill_type, b.billing_period, b.due_date,
+           (pr.first_name || ' ' || pr.last_name) as tenant_name,
+           u.label as unit_label,
+           (it.total - b.discount)            as total_due,
+           py.paid,
+           (it.total - b.discount - py.paid)  as balance,
+           case when b.id is null                                         then 'unbilled'
+                when pend.id is not null                                  then 'pending'
+                when it.total > 0 and it.total - b.discount - py.paid <= 0 then 'paid'
+                when b.due_date < ph_today()                            then 'overdue'
+                when py.paid > 0                                          then 'partial'
+                else 'unpaid' end as status,
+           coalesce(pend.method::text, lp.method::text) as method,
+           lp.received_on                     as paid_on,
+           -- Lease has not started yet, so there is nothing to bill this month
+           case when b.id is null
+                 and l.start_date > (v_period + interval '1 month' - interval '1 day')::date
+                then l.start_date end as starts_on,
+           case when pend.id is not null then pend.amount else it.total - b.discount end as amount,
+           case when pend.id is not null then jsonb_build_object(
+                  'payment_id',   pend.id,
+                  'amount',       pend.amount,
+                  'method',       pend.method,
+                  'reference_no', pend.reference_no,
+                  'note',         pend.note,
+                  'planned_date', pend.planned_date,
+                  'receipt_path', pend.receipt_path,
+                  'created_at',   pend.created_at) end as pending
+      from leases l
+      join units u      on u.id = l.unit_id
+      join profiles pr  on pr.id = l.tenant_id
+      left join bills b on b.lease_id = l.id
+       and (b.billing_period = v_period
+            -- A move-in bill stays on the ledger while it is unpaid, has a payment
+            -- waiting, or was paid this month, even if its own month is later.
+            or (b.bill_type = 'move_in' and (
+                  bill_balance(b.id) > 0
+                  or exists (
+                       select 1 from payments x
+                        where x.bill_id = b.id and x.status = 'pending')
+                  or exists (
+                       select 1 from payments x
+                        where x.bill_id = b.id and x.status = 'confirmed'
+                          and date_trunc('month', x.received_on)::date = v_period))))
+      cross join lateral (select coalesce(sum(amount), 0) as total
+                            from bill_items where bill_id = b.id) it
+      cross join lateral (select coalesce(sum(amount), 0) as paid
+                            from payments where bill_id = b.id and status = 'confirmed') py
+      left join lateral (select * from payments
+                          where bill_id = b.id and status = 'pending'
+                          order by created_at desc limit 1) pend on true
+      left join lateral (select method, received_on from payments
+                          where bill_id = b.id and status = 'confirmed'
+                          order by confirmed_at desc limit 1) lp on true
+     where u.property_id = p_property
+       and l.status = 'active'
+  ) r;
+
+  -- Rent received = confirmed / billed, monthly bills only
+  with m as (
+    select (select coalesce(sum(amount), 0) from bill_items where bill_id = bl.id) - bl.discount as total,
+           (select coalesce(sum(amount), 0) from payments where bill_id = bl.id and status = 'confirmed') as paid
+      from bills bl
+      join leases l on l.id = bl.lease_id
+      join units u  on u.id = l.unit_id
+     where u.property_id = p_property and l.status = 'active'
+       and bl.bill_type = 'monthly' and bl.billing_period = v_period)
+  select sum(total), sum(least(paid, total)) into v_total, v_paid from m;
+
+  -- Money actually received in this month: confirmed payments of any kind
+  -- (monthly rent as well as the move-in bill), by the date they were received.
+  select coalesce(sum(pay.amount), 0) into v_received
+    from payments pay
+    join bills bl on bl.id = pay.bill_id
+    join leases l on l.id = bl.lease_id
+    join units u  on u.id = l.unit_id
+   where u.property_id = p_property
+     and pay.status = 'confirmed'
+     and date_trunc('month', coalesce(pay.received_on, (pay.confirmed_at at time zone 'Asia/Manila')::date))::date = v_period;
+
+  select count(*), coalesce(sum(pay.amount), 0) into v_pending, v_pending_amt
+    from payments pay
+    join bills bl on bl.id = pay.bill_id
+    join leases l on l.id = bl.lease_id
+    join units u  on u.id = l.unit_id
+   where u.property_id = p_property and pay.status = 'pending';
+
+  select count(*) into v_repairs
+    from maintenance_requests mr join units u on u.id = mr.unit_id
+   where u.property_id = p_property and mr.status in ('new', 'assigned');
+
+  select coalesce((select last_number from receipt_counters
+                    where property_id = p_property and year = v_year), 0) + 1 into v_next;
+
+  return jsonb_build_object(
+    'month', v_period,
+    'rows', v_rows,
+    'rent_received_pct', case when coalesce(v_total, 0) > 0 then round(100 * v_paid / v_total) end,
+    'rent_expected', coalesce(v_total, 0),
+    'rent_collected', coalesce(v_paid, 0),
+    'rent_received', v_received,
+    'pending_count', v_pending,
+    'pending_amount', v_pending_amt,
+    'open_repairs', v_repairs,
+    'next_receipt_year', v_year,
+    'next_receipt_number', v_next);
+end $$;
+
+create or replace function landlord_overview(p_property uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_period    date := date_trunc('month', ph_today())::date;
+  v_total     numeric;
+  v_paid      numeric;
+  v_pending   int;
+  v_received  numeric;
+  v_repairs   int;
+  v_vacant    int;
+  v_attention jsonb;
+  v_ann       jsonb;
+begin
+  if not owns_property(p_property) then raise exception 'not_allowed'; end if;
+
+  -- Rent received this month = confirmed payments / total billed (monthly bills only)
+  with b as (
+    select coalesce((select sum(amount) from bill_items where bill_id = bl.id), 0) - bl.discount as total,
+           coalesce((select sum(amount) from payments where bill_id = bl.id and status = 'confirmed'), 0) as paid
+      from bills bl
+      join leases l on l.id = bl.lease_id
+      join units u  on u.id = l.unit_id
+     where u.property_id = p_property
+       and bl.bill_type = 'monthly'
+       and bl.billing_period = v_period
+  )
+  select sum(total), sum(least(paid, total)) into v_total, v_paid from b;
+
+  -- Money actually received in this month: confirmed payments of any kind
+  -- (monthly rent as well as the move-in bill), by the date they were received.
+  select coalesce(sum(pay.amount), 0) into v_received
+    from payments pay
+    join bills bl on bl.id = pay.bill_id
+    join leases l on l.id = bl.lease_id
+    join units u  on u.id = l.unit_id
+   where u.property_id = p_property
+     and pay.status = 'confirmed'
+     and date_trunc('month', coalesce(pay.received_on, (pay.confirmed_at at time zone 'Asia/Manila')::date))::date = v_period;
+
+  -- Cash notices waiting for the landlord
+  select count(*) into v_pending
+    from payments pay
+    join bills bl  on bl.id = pay.bill_id
+    join leases l  on l.id = bl.lease_id
+    join units u   on u.id = l.unit_id
+   where u.property_id = p_property and pay.method = 'cash' and pay.status = 'pending';
+
+  -- Repairs not resolved yet
+  select count(*) into v_repairs
+    from maintenance_requests mr
+    join units u on u.id = mr.unit_id
+   where u.property_id = p_property and mr.status in ('new', 'assigned');
+
+  -- Units with no active tenant
+  select count(*) into v_vacant
+    from units u
+   where u.property_id = p_property
+     and not exists (select 1 from leases l where l.unit_id = u.id and l.status = 'active');
+
+  -- "Needs attention": cash notices, new repairs (urgent first), overdue bills
+  select coalesce(jsonb_agg(to_jsonb(a) order by a.priority, a.sort_at desc), '[]'::jsonb)
+    into v_attention
+    from (
+      select * from (
+        select 'cash'::text as kind, pay.id as id, 1 as priority, pay.created_at as sort_at,
+               u.label as unit_label,
+               (pr.first_name || ' ' || pr.last_name)::text as person,
+               pay.amount as amount, null::text as urgency, null::int as days_overdue, null::text as title
+          from payments pay
+          join bills bl on bl.id = pay.bill_id
+          join leases l on l.id = bl.lease_id
+          join units u  on u.id = l.unit_id
+          join profiles pr on pr.id = pay.payer_id
+         where u.property_id = p_property and pay.method = 'cash' and pay.status = 'pending'
+
+        union all
+
+        select 'repair'::text, mr.id, case when mr.urgency = 'urgent' then 2 else 4 end, mr.created_at,
+               u.label, null::text, null::numeric, mr.urgency::text, null::int, mr.title
+          from maintenance_requests mr
+          join units u on u.id = mr.unit_id
+         where u.property_id = p_property and mr.status = 'new'
+
+        union all
+
+        select 'overdue'::text, x.bill_id, 3, x.due_date::timestamptz,
+               x.unit_label, x.person, x.balance, null::text, (ph_today() - x.due_date)::int, null::text
+          from (
+            select bl.id as bill_id, bl.due_date, u.label as unit_label,
+                   (pr.first_name || ' ' || pr.last_name)::text as person,
+                   (it.total - bl.discount - py.paid) as balance
+              from bills bl
+              join leases l on l.id = bl.lease_id
+              join units u  on u.id = l.unit_id
+              join profiles pr on pr.id = l.tenant_id
+              cross join lateral (select coalesce(sum(amount), 0) as total from bill_items where bill_id = bl.id) it
+              cross join lateral (select coalesce(sum(amount), 0) as paid
+                                    from payments where bill_id = bl.id and status = 'confirmed') py
+             where u.property_id = p_property
+               and l.status = 'active'
+               and bl.due_date < ph_today()
+               and (it.total - bl.discount - py.paid) > 0
+          ) x
+      ) q
+      order by priority, sort_at desc
+      limit 6
+    ) a;
+
+  -- Three most recent announcements (sent or draft)
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'id', a.id, 'title', a.title, 'audience', a.audience, 'status', a.status,
+           'at', coalesce(a.published_at, a.created_at),
+           'unit_count', (select count(*) from announcement_units au where au.announcement_id = a.id)
+         ) order by coalesce(a.published_at, a.created_at) desc), '[]'::jsonb)
+    into v_ann
+    from (
+      select * from announcements
+       where property_id = p_property
+       order by coalesce(published_at, created_at) desc
+       limit 3
+    ) a;
+
+  return jsonb_build_object(
+    'rent_received_pct', case when coalesce(v_total, 0) > 0 then round(100 * v_paid / v_total) end,
+    'rent_received', v_received,
+    'pending_cash', v_pending,
+    'open_repairs', v_repairs,
+    'vacant_units', v_vacant,
+    'attention', v_attention,
+    'announcements', v_ann
+  );
+end $$;

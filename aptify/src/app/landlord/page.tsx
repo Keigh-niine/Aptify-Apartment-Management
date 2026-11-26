@@ -18,14 +18,17 @@ const cap = (s: string | null) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : 
 const reviewLink =
   "inline-flex items-center justify-center rounded-[10px] border border-slate-300 bg-white px-3.5 py-[7px] text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50";
 
-function Stat({ value, label }: { value: string; label: string }) {
+function Stat({ value, label, note }: { value: string; label: string; note?: string }) {
   return (
     <div className="flex flex-col gap-1 rounded-2xl border border-slate-200 bg-white p-5">
       <p className="text-[32px] font-bold text-slate-900">{value}</p>
       <p className="text-sm text-slate-500">{label}</p>
+      {note && <p className="text-xs text-slate-500">{note}</p>}
     </div>
   );
 }
+
+const peso = (n: number) => formatPeso(n).replace(/\.00$/, "");
 
 function AttentionRow({ item }: { item: AttentionItem }) {
   const unit = shortLabel(item.unit_label);
@@ -149,10 +152,22 @@ export default async function OverviewPage() {
       )}
 
       <div className="grid grid-cols-2 gap-5 lg:grid-cols-4">
-        <Stat
-          value={o.rent_received_pct === null ? "—" : `${o.rent_received_pct}%`}
-          label="Rent received"
-        />
+        {o.rent_received !== undefined ? (
+          <Stat
+            value={peso(Number(o.rent_received))}
+            label="Rent received"
+            note={
+              o.rent_received_pct === null
+                ? "Payments received this month"
+                : `${o.rent_received_pct}% of this month's rent billed`
+            }
+          />
+        ) : (
+          <Stat
+            value={o.rent_received_pct === null ? "—" : `${o.rent_received_pct}%`}
+            label="Rent received"
+          />
+        )}
         <Stat value={String(o.pending_cash)} label="Pending cash" />
         <Stat value={String(o.open_repairs)} label="Open repairs" />
         <Stat value={String(o.vacant_units)} label="Vacant units" />

@@ -17,13 +17,26 @@ import {
   type ChargeDraft,
 } from "@/lib/units";
 import { ChargesEditor } from "./charges-editor";
-import { inputClass, Labeled, MoneyInput, Panel, Toggle } from "./ui";
+import { inputClass, Labeled, MoneyInput, Panel } from "./ui";
 import { Stepper } from "./stepper";
 
 export type VacantUnit = { id: string; label: string; listed_rent: number | null };
 
 const stepLabels = ["Unit and tenant", "Lease and billing", "Review and share"];
 const dueDays = Array.from({ length: 28 }, (_, i) => i + 1);
+
+const rentStartOptions = [
+  {
+    value: true,
+    title: "Yes, rent starts now",
+    desc: "The security deposit and advance rent are billed once, when the tenant joins.",
+  },
+  {
+    value: false,
+    title: "No, not yet",
+    desc: "No bill when they join. Billing follows the lease start date.",
+  },
+];
 
 const outlineLink =
   "inline-flex items-center justify-center rounded-[10px] border border-slate-300 bg-white px-5 py-[11px] text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50";
@@ -304,14 +317,34 @@ export function InviteWizard({
 
             <div className="h-px bg-slate-200" />
 
-            <div className="flex items-center gap-3">
-              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <p className="text-base font-bold text-slate-900">Move-in charges</p>
-                <p className="text-xs text-slate-500">
-                  Security deposit and advance rent, billed once as a separate bill
-                </p>
+            <div className="flex flex-col gap-3">
+              <p className="text-base font-bold text-slate-900">Does the rent start now?</p>
+              <div
+                role="radiogroup"
+                aria-label="Does the rent start now?"
+                className="grid gap-3 sm:grid-cols-2"
+              >
+                {rentStartOptions.map((o) => {
+                  const selected = moveIn === o.value;
+                  return (
+                    <button
+                      key={String(o.value)}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => setMoveIn(o.value)}
+                      className={`flex flex-col gap-1 rounded-xl border px-4 py-3 text-left transition-colors ${
+                        selected
+                          ? "border-sky-700 bg-sky-50 ring-2 ring-sky-200"
+                          : "border-slate-300 bg-white hover:bg-slate-50"
+                      }`}
+                    >
+                      <span className="text-sm font-semibold text-slate-900">{o.title}</span>
+                      <span className="text-xs text-slate-500">{o.desc}</span>
+                    </button>
+                  );
+                })}
               </div>
-              <Toggle checked={moveIn} onChange={setMoveIn} label="Move-in charges" />
             </div>
 
             {moveIn && (
@@ -378,7 +411,7 @@ export function InviteWizard({
             {moveIn && (
               <>
                 <div className="my-1.5 h-px bg-slate-200" />
-                <p className="text-[13px] font-semibold text-slate-900">Move-in bill</p>
+                <p className="text-[13px] font-semibold text-slate-900">Bill due when they join</p>
                 <Row label="Security deposit" value={formatPeso(depositNum ?? 0)} />
                 <Row label="Advance rent" value={formatPeso(advanceNum ?? 0)} />
                 <Row label="Total due on joining" value={formatPeso(moveInTotal)} bold />
@@ -411,8 +444,12 @@ export function InviteWizard({
               value={charges.map((c) => c.name.trim()).filter(Boolean).join(", ") || "None"}
             />
             <Row
-              label="Move-in charges"
-              value={moveIn ? `${formatPeso(moveInTotal)} (deposit and advance)` : "None"}
+              label="Rent starts now"
+              value={
+                moveIn
+                  ? `Yes. ${formatPeso(moveInTotal)} due when they join (deposit and advance)`
+                  : "No. No bill when they join"
+              }
             />
             <div className="mt-3 flex gap-2.5">
               <Button type="button" onClick={() => { router.push("/landlord/units"); router.refresh(); }}>
