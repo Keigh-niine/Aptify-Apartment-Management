@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { SiteButton } from "@/components/site-button";
+import { PaymentHistoryTable } from "@/components/tenant/payments/payment-history-table";
 import { formatPeso } from "@/lib/format";
-import { methodLabel, monthTitle } from "@/lib/ledger";
+import { monthTitle } from "@/lib/ledger";
 import { daysUntil, getTenantContext, rejectionText } from "@/lib/tenant";
-import type { HistoryRow, PaymentsData } from "@/lib/tenant-payments";
+import type { PaymentsData } from "@/lib/tenant-payments";
 
 export const instant = false;
 
@@ -20,16 +21,6 @@ const slashDate = (iso: string) => {
   const [y, m, d] = iso.split("-");
   return `${m}/${d}/${y}`;
 };
-
-// "2026-11-24T09:15:00+00:00" -> "11/24/2026" in Philippine time (same format as the Unpaid bills dates)
-const paidDate = (ts: string) =>
-  slashDate(new Date(ts).toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }));
-
-function statusChip(h: HistoryRow) {
-  if (h.status === "confirmed") return { text: "Paid", cls: "bg-green-100 text-green-800" };
-  if (h.status === "rejected") return { text: "Rejected", cls: "bg-red-100 text-red-800" };
-  return { text: h.method === "cash" ? "Pending cash" : "Pending", cls: "bg-amber-100 text-amber-800" };
-}
 
 const outline =
   "inline-flex items-center justify-center rounded-[10px] border border-slate-300 bg-white px-3.5 py-[7px] text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50";
@@ -247,42 +238,7 @@ export default async function TenantPaymentsPage() {
         {p.history.length === 0 ? (
           <p className="py-2 text-sm text-slate-500">No payments yet.</p>
         ) : (
-          <div className="max-h-[22rem] overflow-auto">
-            <div className="min-w-[640px]">
-              <div className="sticky top-0 z-10 grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr] gap-4 rounded-lg bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-500">
-                <span>Date</span>
-                <span>Amount</span>
-                <span>Method</span>
-                <span>Status</span>
-                <span />
-              </div>
-              {p.history.map((h) => {
-                const c = statusChip(h);
-                return (
-                  <div
-                    key={h.id}
-                    className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr] items-center gap-4 border-b border-slate-100 px-3 py-3 text-sm last:border-b-0"
-                  >
-                    <span className="font-semibold text-slate-900">
-                      {paidDate(h.created_at)}
-                    </span>
-                    <span className="text-slate-900">{formatPeso(Number(h.amount))}</span>
-                    <span className="text-slate-900">{methodLabel[h.method]}</span>
-                    <span>
-                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${c.cls}`}>{c.text}</span>
-                    </span>
-                    <span className="flex justify-end">
-                      {h.status === "confirmed" && h.receipt_no && (
-                        <Link href={`/tenant/payments/receipts/${h.id}`} className={outline}>
-                          View receipt
-                        </Link>
-                      )}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          <PaymentHistoryTable history={p.history} />
         )}
       </section>
     </div>

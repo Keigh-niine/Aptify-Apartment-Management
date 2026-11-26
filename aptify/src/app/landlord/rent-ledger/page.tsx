@@ -1,6 +1,6 @@
 import { LedgerBoard } from "@/components/landlord/ledger/ledger-board";
 import { getLandlordContext } from "@/lib/landlord";
-import type { LedgerData, ReceiptRecord } from "@/lib/ledger";
+import type { LedgerData, ReceiptRecord, UnpaidBill } from "@/lib/ledger";
 
 export const instant = false;
 
@@ -23,8 +23,18 @@ export default async function RentLedgerPage() {
 
   const ledger = data as LedgerData;
 
+  // Every tenant's bill that still has a balance
+  const { data: unpaidRows, error: unpaidError } = await supabase.rpc("landlord_unpaid_bills", {
+    p_property: property.id,
+  });
+  if (unpaidError) console.error("landlord_unpaid_bills failed:", unpaidError.message);
+  const unpaid = (unpaidRows ?? []) as UnpaidBill[];
+
   // Receipt images are in a private bucket, so each one needs a temporary link.
-  const paths = ledger.rows.flatMap((r) => (r.pending?.receipt_path ? [r.pending.receipt_path] : []));
+  const paths = [
+    ...ledger.rows.flatMap((r) => (r.pending?.receipt_path ? [r.pending.receipt_path] : [])),
+    ...unpaid.flatMap((u) => (u.pending?.receipt_path ? [u.pending.receipt_path] : [])),
+  ];
   const urls = new Map<string, string>();
   if (paths.length > 0) {
     const { data: signed } = await supabase.storage
@@ -50,6 +60,18 @@ export default async function RentLedgerPage() {
     ),
   };
 
+  const unpaidWithUrls: UnpaidBill[] = unpaid.map((u) =>
+    u.pending
+      ? {
+          ...u,
+          pending: {
+            ...u.pending,
+            receipt_url: u.pending.receipt_path ? (urls.get(u.pending.receipt_path) ?? null) : null,
+          },
+        }
+      : u
+  );
+
   // Permanent receipt records. They stay even if the tenant is removed or deletes their account.
   const { data: receiptRows, error: receiptsError } = await supabase
     .from("receipt_records")
@@ -69,6 +91,8 @@ export default async function RentLedgerPage() {
       propertyName={property.name}
       receipts={(receiptRows ?? []) as ReceiptRecord[]}
       receiptsError={receiptsError ? "load_failed" : null}
+      unpaid={unpaidWithUrls}
+      unpaidError={unpaidError ? "load_failed" : null}
     />
   );
 }

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { connection } from "next/server";
 import { RpcButton } from "@/components/landlord/rpc-button";
-import { formatPeso } from "@/lib/format";
+import { formatPeso, formatPesoCompact } from "@/lib/format";
 import { ago } from "@/lib/time";
 import {
   getLandlordContext,
@@ -18,17 +18,29 @@ const cap = (s: string | null) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : 
 const reviewLink =
   "inline-flex items-center justify-center rounded-[10px] border border-slate-300 bg-white px-3.5 py-[7px] text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50";
 
-function Stat({ value, label, note }: { value: string; label: string; note?: string }) {
+function Stat({
+  value,
+  label,
+  note,
+  title,
+}: {
+  value: string;
+  label: string;
+  note?: string;
+  title?: string; // the full, exact value, shown when hovering
+}) {
   return (
-    <div className="flex flex-col gap-1 rounded-2xl border border-slate-200 bg-white p-5">
-      <p className="text-[32px] font-bold text-slate-900">{value}</p>
+    <div className="flex min-w-0 flex-col gap-1 rounded-2xl border border-slate-200 bg-white p-5">
+      <p title={title} className="break-words text-[32px] font-bold leading-tight text-slate-900">
+        {value}
+      </p>
       <p className="text-sm text-slate-500">{label}</p>
       {note && <p className="text-xs text-slate-500">{note}</p>}
     </div>
   );
 }
 
-const peso = (n: number) => formatPeso(n).replace(/\.00$/, "");
+const peso = formatPesoCompact; // short form for large amounts, like ₱2.47B
 
 function AttentionRow({ item }: { item: AttentionItem }) {
   const unit = shortLabel(item.unit_label);
@@ -155,6 +167,7 @@ export default async function OverviewPage() {
         {o.rent_received !== undefined ? (
           <Stat
             value={peso(Number(o.rent_received))}
+            title={formatPeso(Number(o.rent_received))}
             label="Rent received"
             note={
               o.rent_received_pct === null

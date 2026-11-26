@@ -3143,3 +3143,125 @@ begin
     'announcements', v_ann
   );
 end $$;
+
+
+
+-- =====================================================================
+-- 024_unpaid_bills_review.sql
+-- Replaces landlord_unpaid_bills (from 022) so each row also carries the lease and the details of a
+-- payment waiting for review, which lets you press "Review payment" right in the Unpaid bills table.
+-- Powers the "Unpaid bills" table in the landlord's Rent ledger: every tenant's bill
+-- (any month, including move-in bills) that still has a balance. Status:
+--   pending  a payment was sent and is waiting for you to confirm
+--   overdue  the due date has passed (Philippine time)
+--   partial  some of it is paid
+--   unpaid   nothing paid yet, not due yet
+-- Safe to run more than once.
+-- =====================================================================
+
+create or replace function landlord_unpaid_bills(p_property uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not owns_property(p_property) then raise exception 'not_allowed'; end if;
+
+  return coalesce((
+    select jsonb_agg(to_jsonb(x) order by x.due_date, x.tenant_name)
+      from (
+        select l.id as lease_id, b.id as bill_id, b.bill_type, b.billing_period, b.due_date,
+               (pr.first_name || ' ' || pr.last_name) as tenant_name,
+               u.label as unit_label,
+               (it.total - b.discount)               as total_due,
+               py.paid,
+               (it.total - b.discount - py.paid)     as balance,
+               case when pend.id is not null            then 'pending'
+                    when b.due_date < ph_today()        then 'overdue'
+                    when py.paid > 0                    then 'partial'
+                    else 'unpaid' end                   as status,
+               greatest(ph_today() - b.due_date, 0)     as days_overdue,
+               case when pend.id is not null then jsonb_build_object(
+                      'payment_id',   pend.id,
+                      'amount',       pend.amount,
+                      'method',       pend.method,
+                      'reference_no', pend.reference_no,
+                      'note',         pend.note,
+                      'planned_date', pend.planned_date,
+                      'receipt_path', pend.receipt_path,
+                      'created_at',   pend.created_at) end as pending
+          from bills b
+          join leases l     on l.id = b.lease_id
+          join units u      on u.id = l.unit_id
+          join profiles pr  on pr.id = l.tenant_id
+          cross join lateral (select coalesce(sum(amount), 0) as total
+                                from bill_items where bill_id = b.id) it
+          cross join lateral (select coalesce(sum(amount), 0) as paid
+                                from payments where bill_id = b.id and status = 'confirmed') py
+          left join lateral (select * from payments
+                              where bill_id = b.id and status = 'pending'
+                              order by created_at desc limit 1) pend on true
+         where u.property_id = p_property
+           and l.status = 'active'
+           and it.total > 0
+           and it.total - b.discount - py.paid > 0
+      ) x
+  ), '[]'::jsonb);
+end $$;
+
+-- =====================================================================
+-- 024_unpaid_bills_review.sql
+-- Replaces landlord_unpaid_bills (from 022) so each row also carries the lease and the details of a
+-- payment waiting for review, which lets you press "Review payment" right in the Unpaid bills table.
+-- Powers the "Unpaid bills" table in the landlord's Rent ledger: every tenant's bill
+-- (any month, including move-in bills) that still has a balance. Status:
+--   pending  a payment was sent and is waiting for you to confirm
+--   overdue  the due date has passed (Philippine time)
+--   partial  some of it is paid
+--   unpaid   nothing paid yet, not due yet
+-- Safe to run more than once.
+-- =====================================================================
+
+create or replace function landlord_unpaid_bills(p_property uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not owns_property(p_property) then raise exception 'not_allowed'; end if;
+
+  return coalesce((
+    select jsonb_agg(to_jsonb(x) order by x.due_date, x.tenant_name)
+      from (
+        select l.id as lease_id, b.id as bill_id, b.bill_type, b.billing_period, b.due_date,
+               (pr.first_name || ' ' || pr.last_name) as tenant_name,
+               u.label as unit_label,
+               (it.total - b.discount)               as total_due,
+               py.paid,
+               (it.total - b.discount - py.paid)     as balance,
+               case when pend.id is not null            then 'pending'
+                    when b.due_date < ph_today()        then 'overdue'
+                    when py.paid > 0                    then 'partial'
+                    else 'unpaid' end                   as status,
+               greatest(ph_today() - b.due_date, 0)     as days_overdue,
+               case when pend.id is not null then jsonb_build_object(
+                      'payment_id',   pend.id,
+                      'amount',       pend.amount,
+                      'method',       pend.method,
+                      'reference_no', pend.reference_no,
+                      'note',         pend.note,
+                      'planned_date', pend.planned_date,
+                      'receipt_path', pend.receipt_path,
+                      'created_at',   pend.created_at) end as pending
+          from bills b
+          join leases l     on l.id = b.lease_id
+          join units u      on u.id = l.unit_id
+          join profiles pr  on pr.id = l.tenant_id
+          cross join lateral (select coalesce(sum(amount), 0) as total
+                                from bill_items where bill_id = b.id) it
+          cross join lateral (select coalesce(sum(amount), 0) as paid
+                                from payments where bill_id = b.id and status = 'confirmed') py
+          left join lateral (select * from payments
+                              where bill_id = b.id and status = 'pending'
+                              order by created_at desc limit 1) pend on true
+         where u.property_id = p_property
+           and l.status = 'active'
+           and it.total > 0
+           and it.total - b.discount - py.paid > 0
+      ) x
+  ), '[]'::jsonb);
+end $$;

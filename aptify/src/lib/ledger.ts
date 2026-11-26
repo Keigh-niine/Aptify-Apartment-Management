@@ -68,6 +68,50 @@ export type LedgerData = {
   next_receipt_number: number;
 };
 
+export type UnpaidBill = {
+  lease_id: string; // missing until 024 is run
+  bill_id: string;
+  bill_type: "monthly" | "move_in";
+  billing_period: string;
+  due_date: string;
+  tenant_name: string;
+  unit_label: string;
+  total_due: number;
+  paid: number;
+  balance: number;
+  status: "pending" | "overdue" | "partial" | "unpaid";
+  days_overdue: number;
+  pending?: PendingPayment | null; // the payment waiting for review (missing until 024 is run)
+};
+
+// An unpaid bill with a payment waiting, shaped like a ledger row so it can use the review dialog
+export function unpaidToRow(u: UnpaidBill): BillLedgerRow | null {
+  if (!u.pending) return null;
+  return {
+    lease_id: u.lease_id,
+    tenant_name: u.tenant_name,
+    unit_label: u.unit_label,
+    status: "pending",
+    bill_id: u.bill_id,
+    bill_type: u.bill_type,
+    billing_period: u.billing_period,
+    due_date: u.due_date,
+    total_due: u.total_due,
+    paid: u.paid,
+    balance: u.balance,
+    method: u.pending.method,
+    amount: u.pending.amount,
+    paid_on: null,
+    pending: u.pending,
+  };
+}
+
+// Whole days past a due date, counted in Philippine time
+export function daysOverdue(dueIso: string) {
+  const today = Date.parse(manilaToday() + "T00:00:00Z");
+  return Math.max(0, Math.round((today - Date.parse(dueIso + "T00:00:00Z")) / 86_400_000));
+}
+
 export type ReceiptRecord = {
   id: string;
   receipt_no: string;

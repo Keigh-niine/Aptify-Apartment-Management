@@ -1,11 +1,12 @@
 "use client";
 
 import { Check, ChevronDown } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useEffect, useRef, useState, type UIEvent } from "react";
 import { RpcButton } from "@/components/landlord/rpc-button";
 import { SiteButton } from "@/components/site-button";
 import { Button } from "@/components/ui/button";
-import { formatPeso } from "@/lib/format";
+import { formatPeso, formatPesoCompact } from "@/lib/format";
 import {
   methodLabel,
   numericDate,
@@ -19,28 +20,41 @@ import {
   type Method,
   type BillLedgerRow,
   type ReceiptRecord,
+  type UnpaidBill,
+  daysOverdue,
+  unpaidToRow,
 } from "@/lib/ledger";
 import { shortLabel } from "@/lib/signup";
-import { GenerateBillsButton } from "./generate-bills-button";
 import { RecordCashDialog } from "./record-cash-dialog";
 import { ReviewPaymentDialog } from "./review-payment-dialog";
 
 type Tab = "all" | "pending" | "overdue";
 
-const cols =
-  "grid grid-cols-[minmax(150px,240px)_80px_110px_110px_150px_1fr] items-center gap-4";
-
-function Stat({ value, label, note }: { value: string; label: string; note?: string }) {
+function Stat({
+  value,
+  label,
+  note,
+  title,
+}: {
+  value: string;
+  label: string;
+  note?: string;
+  title?: string; // the full, exact value, shown when hovering
+}) {
   return (
-    <div className="flex flex-col gap-1 rounded-2xl border border-slate-200 bg-white p-5">
-      <p className="text-[32px] font-bold text-slate-900">{value}</p>
+    <div className="flex min-w-0 flex-col gap-1 rounded-2xl border border-slate-200 bg-white p-5">
+      <p title={title} className="break-words text-[32px] font-bold leading-tight text-slate-900">
+        {value}
+      </p>
       <p className="text-sm text-slate-500">{label}</p>
       {note && <p className="text-xs text-slate-500">{note}</p>}
     </div>
   );
 }
 
-const peso = (n: number) => formatPeso(n).replace(/\.00$/, "");
+const peso = formatPesoCompact; // short form for large amounts, like ₱2.47B
+
+const HISTORY_BATCH = 8; // payments shown at first, and loaded each time you reach the bottom
 
 const receiptCols =
   "grid grid-cols-[140px_120px_minmax(150px,240px)_70px_90px_130px_1fr] items-center gap-4";
@@ -163,6 +177,126 @@ function CheckList<T extends string>({
   );
 }
 
+const unpaidCols =
+  "grid grid-cols-[minmax(150px,1.6fr)_70px_1.3fr_1fr_1fr_1fr_1.1fr_1.3fr] items-center gap-4";
+
+const unpaidStatus: Record<UnpaidBill["status"], { text: string; cls: string }> = {
+  overdue: { text: "Overdue", cls: "bg-red-100 text-red-800" },
+  partial: { text: "Partial", cls: "bg-sky-100 text-sky-700" },
+  pending: { text: "Payment pending", cls: "bg-amber-100 text-amber-800" },
+  unpaid: { text: "Unpaid", cls: "bg-slate-100 text-slate-700" },
+};
+
+// Every tenant's bill that still has a balance, in one list
+function UnpaidBillsTable({
+  unpaid,
+  error,
+  onReview,
+}: {
+  unpaid: UnpaidBill[];
+  error: string | null;
+  onReview: (billId: string) => void;
+}) {
+  const total = unpaid.reduce((sum, u) => sum + Number(u.balance), 0);
+  const hasOverdue = unpaid.some((u) => u.status === "overdue");
+
+  return (
+    <section
+      className={`flex flex-col gap-4 rounded-2xl border bg-white p-6 ${
+        hasOverdue ? "border-red-200" : unpaid.length > 0 ? "border-amber-200" : "border-slate-200"
+      }`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="flex flex-col gap-1">
+          <h2 className="text-xl font-bold text-slate-900">Unpaid bills</h2>
+          <p className="text-sm text-slate-500">
+            Every tenant&apos;s bill that still has a balance, including partly paid bills and
+            bills from past months.
+          </p>
+        </div>
+        {unpaid.length > 0 && !error && (
+          <div className="flex flex-col items-end" title={formatPeso(total)}>
+            <p className="text-xs text-slate-500">Total unpaid</p>
+            <p className={`text-xl font-bold ${hasOverdue ? "text-red-800" : "text-slate-900"}`}>
+              {peso(total)}
+            </p>
+          </div>
+        )}
+      </div>
+
+      {error ? (
+        <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
+          Couldn&apos;t load the unpaid bills. Make sure you ran 022 in Supabase. ({error})
+        </p>
+      ) : unpaid.length === 0 ? (
+        <p className="rounded-[10px] bg-slate-50 px-4 py-3 text-sm text-slate-500">
+          No unpaid bills. Every tenant is paid up.
+        </p>
+      ) : (
+        <div className="max-h-[22rem] overflow-auto">
+          <div className="min-w-[960px]">
+            <div
+              className={`${unpaidCols} sticky top-0 z-10 rounded-lg bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-500`}
+            >
+              <span>Tenant</span>
+              <span>Unit</span>
+              <span>Due date</span>
+              <span>Total</span>
+              <span>Paid</span>
+              <span>Balance</span>
+              <span>Status</span>
+              <span />
+            </div>
+            {unpaid.map((u) => {
+              const s = unpaidStatus[u.status] ?? unpaidStatus.unpaid;
+              return (
+                <div
+                  key={u.bill_id}
+                  className={`${unpaidCols} border-b border-slate-100 px-3 py-3 text-sm last:border-b-0`}
+                >
+                  <span className="truncate font-semibold text-slate-900">{u.tenant_name}</span>
+                  <span className="text-slate-900">{shortLabel(u.unit_label)}</span>
+                  <span className="flex flex-col">
+                    <span className="text-slate-900">{numericDate(u.due_date)}</span>
+                    {u.status === "overdue" && Number(u.days_overdue) > 0 && (
+                      <span className="text-xs text-slate-500">
+                        {u.days_overdue} day{Number(u.days_overdue) === 1 ? "" : "s"} overdue
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-slate-900">{formatPeso(Number(u.total_due))}</span>
+                  <span className="text-slate-900">{formatPeso(Number(u.paid))}</span>
+                  <span className="font-semibold text-slate-900">{formatPeso(Number(u.balance))}</span>
+                  <span>
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${s.cls}`}>
+                      {s.text}
+                    </span>
+                  </span>
+                  <span className="flex justify-end gap-2">
+                    {u.status === "pending" && u.pending && (
+                      <Button type="button" onClick={() => onReview(u.bill_id)}>
+                        Review payment
+                      </Button>
+                    )}
+                    {u.status === "overdue" && (
+                      <RpcButton
+                        label="Send reminder"
+                        doneLabel="Sent"
+                        rpc="send_rent_reminder"
+                        args={{ p_bill: u.bill_id }}
+                      />
+                    )}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ReceiptsTable({
   receipts,
   error,
@@ -202,6 +336,29 @@ function ReceiptsTable({
           (statuses.length === 0 || statuses.includes(r.pay_status))
       )
     : receipts;
+
+  const filterKey = JSON.stringify([q, methods, units, statuses]);
+  const [loaded, setLoaded] = useState({ key: filterKey, count: HISTORY_BATCH });
+  const count = loaded.key === filterKey ? loaded.count : HISTORY_BATCH;
+  const loading = useRef(false);
+  const visible = shown.slice(0, count);
+  const remaining = shown.length - visible.length;
+
+  // A new batch has arrived, so reaching the bottom may load the next one
+  useEffect(() => {
+    loading.current = false;
+  }, [count, filterKey]);
+
+  function loadMore() {
+    if (loading.current || remaining <= 0) return;
+    loading.current = true;
+    setLoaded({ key: filterKey, count: count + HISTORY_BATCH });
+  }
+
+  function onHistoryScroll(e: UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 12) loadMore();
+  }
 
   function clearAll() {
     setQuery("");
@@ -297,12 +454,6 @@ function ReceiptsTable({
         </div>
       )}
 
-      {filtering && receipts.length > 0 && !error && (
-        <p className="text-xs text-slate-500">
-          Showing {shown.length} of {receipts.length}
-        </p>
-      )}
-
       {error ? (
         <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">
           Couldn&apos;t load the payment history. Please refresh and try again.
@@ -316,10 +467,13 @@ function ReceiptsTable({
           Nothing matches your search.
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+        <div
+          onScroll={onHistoryScroll}
+          className="h-[26rem] overflow-auto rounded-2xl border border-slate-200 bg-white"
+        >
           <div className="min-w-[860px]">
             <div
-              className={`${receiptCols} border-b border-slate-200 px-6 py-3 text-xs font-semibold text-slate-500`}
+              className={`${receiptCols} sticky top-0 z-10 border-b border-slate-200 bg-white px-6 py-3 text-xs font-semibold text-slate-500`}
             >
               <span>Receipt no.</span>
               <span>Date paid</span>
@@ -327,9 +481,9 @@ function ReceiptsTable({
               <span>Unit</span>
               <span>Method</span>
               <span>Status</span>
-              <span className="text-right">Amount</span>
+              <span className="text-right">Receipt</span>
             </div>
-            {shown.map((r) => {
+            {visible.map((r) => {
               const s = receiptStatus[r.pay_status] ?? receiptStatus.fully_paid;
               return (
                 <div
@@ -351,14 +505,38 @@ function ReceiptsTable({
                       {s.text}
                     </span>
                   </span>
-                  <span className="text-right font-semibold text-slate-900">
-                    {formatPeso(Number(r.amount))}
+                  <span className="flex justify-end">
+                    <Link
+                      href={`/landlord/rent-ledger/receipts/${r.id}`}
+                      className="inline-flex items-center justify-center rounded-[10px] border border-slate-300 bg-white px-3.5 py-[7px] text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50"
+                    >
+                      View receipt
+                    </Link>
                   </span>
                 </div>
               );
             })}
+            {remaining > 0 && (
+              <div className="flex justify-center py-3">
+                <button
+                  type="button"
+                  onClick={loadMore}
+                  className="inline-flex items-center justify-center rounded-[10px] border border-slate-300 bg-white px-3.5 py-[7px] text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50"
+                >
+                  Load {Math.min(HISTORY_BATCH, remaining)} more
+                </button>
+              </div>
+            )}
           </div>
         </div>
+      )}
+
+      {!error && receipts.length > 0 && shown.length > 0 && (
+        <p className="text-xs text-slate-500">
+          Showing {visible.length} of {shown.length}
+          {filtering ? ` matching (${receipts.length} in total)` : ""}
+          {remaining > 0 ? ". Scroll down to see more." : "."}
+        </p>
       )}
     </section>
   );
@@ -366,16 +544,19 @@ function ReceiptsTable({
 
 export function LedgerBoard({
   data,
-  propertyId,
   propertyName,
   receipts,
   receiptsError,
+  unpaid,
+  unpaidError,
 }: {
   data: LedgerData;
   propertyId: string;
   propertyName: string;
   receipts: ReceiptRecord[];
   receiptsError: string | null;
+  unpaid: UnpaidBill[];
+  unpaidError: string | null;
 }) {
   const [tab, setTab] = useState<Tab>("all");
   const [reviewingId, setReviewingId] = useState<string | null>(null);
@@ -422,7 +603,11 @@ export function LedgerBoard({
   const reviewing =
     rows.find(
       (r): r is BillLedgerRow => r.status !== "unbilled" && r.bill_id === reviewingId && !!r.pending
-    ) ?? null;
+    ) ??
+    unpaid
+      .map(unpaidToRow)
+      .find((r): r is BillLedgerRow => r !== null && r.bill_id === reviewingId) ??
+    null;
   const cashRows = rows.filter(
     (r): r is BillLedgerRow =>
       r.status !== "unbilled" && Number(r.balance) > 0 && r.status !== "pending"
@@ -455,14 +640,21 @@ export function LedgerBoard({
             <span className="font-semibold">
               {unbilledCount} tenant{unbilledCount === 1 ? "" : "s"} not billed for {month}.
             </span>{" "}
-            Generate their bills so they can see and pay them.
+            Create their bills so they can see and pay them.
           </p>
-          <GenerateBillsButton propertyId={propertyId} month={data.month} />
+          <SiteButton href={`/landlord/rent-ledger/create-bills?month=${data.month}`}>
+            Create bills
+          </SiteButton>
         </div>
       )}
 
       <div className="grid gap-5 sm:grid-cols-3">
-        <Stat value={rentValue} label="Rent received" note={rentNote} />
+        <Stat
+          value={rentValue}
+          label="Rent received"
+          note={rentNote}
+          title={hasReceived ? formatPeso(Number(data.rent_received)) : undefined}
+        />
         <Stat
           value={String(data.pending_count)}
           label="Pending payments"
@@ -475,26 +667,6 @@ export function LedgerBoard({
         />
       </div>
 
-      {rows.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {tabs.map((t) => (
-            <button
-              key={t.value}
-              type="button"
-              aria-pressed={tab === t.value}
-              onClick={() => setTab(t.value)}
-              className={`cursor-pointer rounded-lg border px-3.5 py-[7px] text-[13px] font-semibold ${
-                tab === t.value
-                  ? "border-sky-700 bg-sky-700 text-white"
-                  : "border-slate-300 bg-white text-slate-500 hover:bg-slate-50"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-      )}
-
       {rows.length === 0 ? (
         <div className="flex flex-col items-center gap-2 rounded-2xl border border-slate-200 bg-white px-6 py-14 text-center">
           <p className="text-lg font-bold text-slate-900">No tenants yet</p>
@@ -504,88 +676,116 @@ export function LedgerBoard({
           </div>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-          <div className="min-w-[860px]">
-            <div
-              className={`${cols} border-b border-slate-200 px-6 py-3 text-xs font-semibold text-slate-500`}
-            >
-              <span>Tenant</span>
-              <span>Unit</span>
-              <span>Amount</span>
-              <span>Method</span>
-              <span>Status</span>
-              <span>Actions</span>
+        <section className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-6">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex flex-col gap-1">
+              <h2 className="text-xl font-bold text-slate-900">This Month&apos;s Rents</h2>
+              <p className="text-sm text-slate-500">
+                Every tenant&apos;s rent for {month}. Review the payments your tenants have sent.
+              </p>
             </div>
-
-            {shown.length === 0 && (
-              <p className="px-6 py-6 text-sm text-slate-500">Nothing in this list.</p>
-            )}
-
-            {shown.map((r) => {
-              const b = statusBadge(r);
-              return (
-                <div
-                  key={r.bill_id ?? r.lease_id}
-                  className={`${cols} border-b border-slate-100 px-6 py-3.5 text-sm last:border-b-0`}
+            <div className="flex flex-wrap gap-2">
+              {tabs.map((t) => (
+                <button
+                  key={t.value}
+                  type="button"
+                  aria-pressed={tab === t.value}
+                  onClick={() => setTab(t.value)}
+                  className={`cursor-pointer rounded-lg border px-3.5 py-[7px] text-[13px] font-semibold ${
+                    tab === t.value
+                      ? "border-sky-700 bg-sky-700 text-white"
+                      : "border-slate-300 bg-white text-slate-500 hover:bg-slate-50"
+                  }`}
                 >
-                  <span className="font-semibold text-slate-900">
-                    {r.tenant_name}
-                    {r.status !== "unbilled" && r.bill_type === "move_in" && (
-                      <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
-                        Move-in
-                      </span>
-                    )}
-                  </span>
-                  <span className="text-slate-900">{shortLabel(r.unit_label)}</span>
-                  <span className="text-slate-900">
-                    {r.status === "unbilled"
-                      ? "—"
-                      : formatPeso(Number(r.amount)).replace(/\.00$/, "")}
-                  </span>
-                  <span className="text-slate-900">
-                    {r.status === "unbilled"
-                      ? "—"
-                      : r.method
-                        ? (methodLabel[r.method] ?? r.method)
-                        : "None yet"}
-                  </span>
-                  <span className="flex flex-col items-start gap-1">
-                    <span
-                      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${b.cls}`}
-                    >
-                      {r.status === "paid" && <Check className="size-3.5" aria-hidden />}
-                      {b.text}
-                    </span>
-                    {r.status === "paid" && r.paid_on && (
-                      <span className="text-xs text-slate-500">on {shortDate(r.paid_on)}</span>
-                    )}
-                    {r.status !== "unbilled" && Number(r.paid) > 0 && Number(r.balance) > 0 && (
-                      <span className="text-xs text-slate-500">
-                        {peso(Number(r.paid))} paid · {peso(Number(r.balance))} left
-                      </span>
-                    )}
-                  </span>
-                  <span className="flex justify-end gap-2">
-                    {r.status === "pending" && (
-                      <Button type="button" onClick={() => setReviewingId(r.bill_id)}>
-                        Review payment
-                      </Button>
-                    )}
-                    {r.status === "overdue" && (
-                      <RpcButton
-                        label="Send reminder"
-                        doneLabel="Sent"
-                        rpc="send_rent_reminder"
-                        args={{ p_bill: r.bill_id }}
-                      />
-                    )}
-                  </span>
-                </div>
-              );
-            })}
+                  {t.label}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+
+          <div className="max-h-[22rem] overflow-auto">
+            <div className="min-w-[960px]">
+              <div
+                className={`${unpaidCols} sticky top-0 z-10 rounded-lg bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-500`}
+              >
+                <span>Tenant</span>
+                <span>Unit</span>
+                <span>Due date</span>
+                <span>Total</span>
+                <span>Paid</span>
+                <span>Balance</span>
+                <span>Status</span>
+                <span />
+              </div>
+
+              {shown.length === 0 && (
+                <p className="px-3 py-6 text-sm text-slate-500">Nothing in this list.</p>
+              )}
+
+              {shown.map((r) => {
+                const b = statusBadge(r);
+                const late = r.status === "overdue" ? daysOverdue(r.due_date) : 0;
+                return (
+                  <div
+                    key={r.bill_id ?? r.lease_id}
+                    className={`${unpaidCols} border-b border-slate-100 px-3 py-3 text-sm last:border-b-0`}
+                  >
+                    <span className="truncate font-semibold text-slate-900">{r.tenant_name}</span>
+                    <span className="text-slate-900">{shortLabel(r.unit_label)}</span>
+                    <span className="flex flex-col">
+                      <span className="text-slate-900">
+                        {r.status === "unbilled" ? "—" : numericDate(r.due_date)}
+                      </span>
+                      {late > 0 && (
+                        <span className="text-xs text-slate-500">
+                          {late} day{late === 1 ? "" : "s"} overdue
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-slate-900">
+                      {r.status === "unbilled" ? "—" : formatPeso(Number(r.total_due))}
+                    </span>
+                    <span className="text-slate-900">
+                      {r.status === "unbilled" ? "—" : formatPeso(Number(r.paid))}
+                    </span>
+                    <span className="font-semibold text-slate-900">
+                      {r.status === "unbilled" ? "—" : formatPeso(Number(r.balance))}
+                    </span>
+                    <span className="flex flex-col items-start gap-1">
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${b.cls}`}
+                      >
+                        {r.status === "paid" && <Check className="size-3.5" aria-hidden />}
+                        {b.text}
+                      </span>
+                      {r.status === "paid" && r.paid_on && (
+                        <span className="text-xs text-slate-500">on {shortDate(r.paid_on)}</span>
+                      )}
+                    </span>
+                    <span className="flex justify-end gap-2">
+                      {r.status === "pending" && (
+                        <Button type="button" onClick={() => setReviewingId(r.bill_id)}>
+                          Review payment
+                        </Button>
+                      )}
+                      {r.status === "overdue" && (
+                        <RpcButton
+                          label="Send reminder"
+                          doneLabel="Sent"
+                          rpc="send_rent_reminder"
+                          args={{ p_bill: r.bill_id }}
+                        />
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </section>
       )}
+
+      <UnpaidBillsTable unpaid={unpaid} error={unpaidError} onReview={setReviewingId} />
 
       <ReceiptsTable receipts={receipts} error={receiptsError} />
 

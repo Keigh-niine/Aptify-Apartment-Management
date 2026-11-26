@@ -4,6 +4,12 @@ export function formatPeso(n: number) {
   );
 }
 
+// For big stat cards: ₱45,000 stays as it is, ₱2,469,827,160 becomes ₱2.47B
+export function formatPesoCompact(n: number) {
+  if (Math.abs(n) < 1_000_000) return formatPeso(n).replace(/\.00$/, "");
+  return "₱" + new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(n);
+}
+
 export function ordinal(n: number) {
   const s = ["th", "st", "nd", "rd"];
   const v = n % 100;
