@@ -2,6 +2,7 @@ import { ago } from "@/lib/time";
 import { formatPeso } from "@/lib/format";
 import { shortLabel } from "@/lib/signup";
 import { expiresIn, rowKind, type RowKind, type UnitRow } from "@/lib/units";
+import { CopyCode } from "./copy-code";
 import { RowActions } from "./row-actions";
 
 const badge: Record<RowKind, { text: string; cls: string }> = {
@@ -102,7 +103,10 @@ export function UnitsTable({ rows }: { rows: UnitRow[] }) {
                   {b.text}
                 </span>
               </span>
-              <span className="text-slate-500">{inviteText}</span>
+              <span className="flex flex-col items-start gap-1">
+                <span className="text-slate-500">{inviteText}</span>
+                {kind === "pending" && r.code && <CopyCode code={r.code} />}
+              </span>
               <span className="flex justify-end">
                 <RowActions
                   kind={kind}

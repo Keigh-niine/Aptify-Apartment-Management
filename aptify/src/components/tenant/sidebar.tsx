@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import {
+  Bell,
   LayoutDashboard,
   LogOut,
   Megaphone,
@@ -17,6 +18,7 @@ const nav = [
   { href: "/tenant", label: "Home", icon: LayoutDashboard, exact: true },
   { href: "/tenant/payments", label: "Payments", icon: Receipt },
   { href: "/tenant/maintenance", label: "Maintenance", icon: Wrench },
+  { href: "/tenant/notifications", label: "Notifications", icon: Bell },
   { href: "/tenant/announcements", label: "Announcements", icon: Megaphone },
   { href: "/tenant/settings", label: "Settings", icon: SettingsIcon },
 ];
@@ -25,10 +27,12 @@ export function Sidebar({
   initials,
   firstName,
   unitLabel,
+  unreadCount = 0,
 }: {
   initials: string;
   firstName: string;
   unitLabel: string;
+  unreadCount?: number;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
@@ -85,7 +89,15 @@ export function Sidebar({
                   : "font-medium text-slate-500 hover:bg-slate-50 hover:text-slate-900"
               }`}
             >
-              <Icon className="size-5 shrink-0" aria-hidden />
+              <span className="relative shrink-0">
+                <Icon className="size-5" aria-hidden />
+                {href === "/tenant/notifications" && unreadCount > 0 && (
+                  <span className="absolute -right-2 -top-2 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-none text-white">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                    <span className="sr-only"> unread</span>
+                  </span>
+                )}
+              </span>
               <span className={label}>{text}</span>
             </Link>
           );

@@ -52,7 +52,33 @@ function historyChip(h: Active["history"][number]) {
 }
 
 // ---------- The big rent card ----------
-function RentCard({ bill }: { bill: TenantBill | null }) {
+function RentCard({
+  bill,
+  olderCount,
+  olderTotal,
+}: {
+  bill: TenantBill | null;
+  olderCount: number;
+  olderTotal: number;
+}) {
+  if (!bill && olderCount > 0) {
+    // Nothing is open this month, but bills from earlier months are still unpaid
+    return (
+      <section className="flex flex-col gap-3 rounded-2xl bg-red-100 p-6">
+        <p className="text-[15px] font-semibold text-red-800">
+          You have unpaid bills from earlier months
+        </p>
+        <p className="text-[40px] font-bold leading-tight text-slate-900">{formatPeso(olderTotal)}</p>
+        <p className="text-sm text-red-800">
+          {olderCount} unpaid bill{olderCount === 1 ? "" : "s"}. Nothing new is due this month yet.
+        </p>
+        <div className="flex flex-wrap gap-2.5">
+          <SiteButton href="/tenant/payments">View unpaid bills</SiteButton>
+        </div>
+      </section>
+    );
+  }
+
   if (!bill) {
     return (
       <section className="flex flex-col gap-3 rounded-2xl bg-green-100 p-6">
@@ -144,12 +170,13 @@ function Card({
   children: React.ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-6">
-      <div className="flex items-center justify-between gap-3">
+    <section className="flex h-[24rem] flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-6">
+      <div className="flex shrink-0 items-center justify-between gap-3">
         <h2 className="text-lg font-bold text-slate-900">{title}</h2>
         {action}
       </div>
-      {children}
+      {/* The card keeps its size; the list inside scrolls */}
+      <div className="-mr-2 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-2">{children}</div>
     </section>
   );
 }
@@ -189,6 +216,8 @@ export default async function TenantHomePage() {
   }
 
   const o = overview;
+  const olderCount = Number(o.unpaid_count ?? 0); // unpaid bills from months that have ended
+  const olderTotal = Number(o.unpaid_total ?? 0);
 
   return (
     <div className="flex flex-col gap-6">
@@ -200,7 +229,23 @@ export default async function TenantHomePage() {
       </div>
 
       <div className="grid items-start gap-5 lg:grid-cols-2">
-        <RentCard bill={o.current_bill} />
+        <div className="flex flex-col gap-3">
+          <RentCard bill={o.current_bill} olderCount={olderCount} olderTotal={olderTotal} />
+          {o.current_bill && olderCount > 0 && (
+            <Link
+              href="/tenant/payments"
+              className="flex items-center justify-between gap-3 rounded-2xl border border-red-200 bg-white px-5 py-3.5 text-sm hover:bg-red-50"
+            >
+              <span className="text-slate-900">
+                <span className="font-semibold text-red-800">
+                  {olderCount} unpaid bill{olderCount === 1 ? "" : "s"} from earlier months
+                </span>{" "}
+                · {formatPeso(olderTotal)} still owed
+              </span>
+              <span className="shrink-0 font-semibold text-sky-700">View</span>
+            </Link>
+          )}
+        </div>
 
         <Card title="Payment history">
           {o.history.length === 0 && <p className="py-2 text-sm text-slate-500">No payments yet.</p>}

@@ -31,6 +31,7 @@ export function CreateBillsForm({
   const [each, setEach] = useState<Record<string, string>>({}); // "lease|charge" -> that tenant's amount
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false); // asking before creating bills with empty variable charges
 
   const bills = preview.bills;
 
@@ -63,7 +64,30 @@ export function CreateBillsForm({
 
   const grandTotal = bills.reduce((sum, b) => sum + totalFor(b), 0);
 
+  // Variable charges that have no amount yet, grouped by charge name, with the tenants affected
+  const missing = groups
+    .map((g) => ({
+      name: g.name,
+      tenants: bills
+        .filter(
+          (b) =>
+            b.variable.some((v) => keyOf(v.name) === g.key) && amountFor(b.lease_id, g.key) === 0
+        )
+        .map((b) => b.tenant_name),
+    }))
+    .filter((m) => m.tenants.length > 0);
+
+  // First press: ask if some variable amounts are empty. "Create anyway" skips the question.
+  function onCreate() {
+    if (missing.length > 0 && !confirming) {
+      setConfirming(true);
+      return;
+    }
+    void submit();
+  }
+
   async function submit() {
+    setConfirming(false);
     setSaving(true);
     setError(null);
 
@@ -275,8 +299,44 @@ export function CreateBillsForm({
         <p className="rounded-xl bg-red-100 p-4 text-sm font-medium text-red-800">{error}</p>
       )}
 
+      {confirming && missing.length > 0 && (
+        <section
+          role="alert"
+          className="flex flex-col gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-5"
+        >
+          <div className="flex flex-col gap-1">
+            <h2 className="text-base font-bold text-amber-900">Some variable charges are empty</h2>
+            <p className="text-sm text-amber-900">
+              These bills will be created <strong>without</strong> the charge, and the tenant is
+              notified right away. A charge can&apos;t be added to a bill afterwards.
+            </p>
+          </div>
+          <ul className="flex flex-col gap-1 text-sm text-amber-900">
+            {missing.map((m) => (
+              <li key={m.name}>
+                <span className="font-semibold">{m.name}</span> ({m.tenants.length}):{" "}
+                {m.tenants.join(", ")}
+              </li>
+            ))}
+          </ul>
+          <div className="flex flex-wrap gap-3">
+            <Button type="button" onClick={() => setConfirming(false)} disabled={saving}>
+              Go back and fill them in
+            </Button>
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={saving}
+              className="inline-flex items-center justify-center rounded-[10px] border border-amber-400 bg-white px-5 py-[11px] text-sm font-semibold text-amber-900 transition-colors hover:bg-amber-100 disabled:opacity-60"
+            >
+              Create anyway
+            </button>
+          </div>
+        </section>
+      )}
+
       <div className="flex flex-wrap items-center gap-3">
-        <Button type="button" onClick={submit} disabled={saving}>
+        <Button type="button" onClick={onCreate} disabled={saving || (confirming && missing.length > 0)}>
           {saving ? "Creating…" : `Create ${bills.length} bill${bills.length === 1 ? "" : "s"}`}
         </Button>
         <Link

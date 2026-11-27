@@ -67,7 +67,21 @@ function AttentionRow({ item }: { item: AttentionItem }) {
     title = `${item.person} (${unit}) is ${days} day${days === 1 ? "" : "s"} overdue`;
     sub = `Overdue · ${formatPeso(Number(item.amount))}`;
     action = (
-      <RpcButton label="Remind" doneLabel="Sent" rpc="send_rent_reminder" args={{ p_bill: item.id }} />
+      <RpcButton
+        label="Remind"
+        doneLabel="Sent"
+        rpc="send_rent_reminder"
+        args={{ p_bill: item.id }}
+        errors={{
+          recently_reminded: {
+            message: "You already sent a reminder for this bill in the last 24 hours.",
+            done: "Reminded today",
+          },
+          nothing_due: { message: "This bill has nothing left to pay." },
+          reminders_off: { message: "This tenant has turned off rent reminders." },
+          no_tenant: { message: "This unit has no tenant yet." },
+        }}
+      />
     );
   }
 

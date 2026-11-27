@@ -72,6 +72,8 @@ export type TenantOverview =
       unit_label: string;
       property_name: string;
       current_bill: TenantBill | null;
+      unpaid_count?: number; // bills from months that have ended and still have a balance (needs 028)
+      unpaid_total?: number;
       history: {
         id: string;
         billing_period: string;

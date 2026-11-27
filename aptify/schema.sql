@@ -2351,15 +2351,6 @@ language sql security definer set search_path = public as $$
 
 revoke all on function generate_all_monthly_bills() from public, anon, authenticated;
 
--- ---------------------------------------------------------------------
--- OPTIONAL: make it automatic. First enable the pg_cron extension in the
--- Supabase dashboard (Database > Extensions), then run this once.
--- Runs every day at 00:05 Philippine time. It is safe to repeat: months that
--- already have a bill are skipped, so new bills appear on the 1st.
---
--- select cron.schedule('aptify-monthly-bills', '5 16 * * *',
---                      $$select generate_all_monthly_bills()$$);
--- ---------------------------------------------------------------------
 
 
 -- =====================================================================
@@ -3206,62 +3197,628 @@ begin
   ), '[]'::jsonb);
 end $$;
 
+
 -- =====================================================================
--- 024_unpaid_bills_review.sql
--- Replaces landlord_unpaid_bills (from 022) so each row also carries the lease and the details of a
--- payment waiting for review, which lets you press "Review payment" right in the Unpaid bills table.
--- Powers the "Unpaid bills" table in the landlord's Rent ledger: every tenant's bill
--- (any month, including move-in bills) that still has a balance. Status:
---   pending  a payment was sent and is waiting for you to confirm
---   overdue  the due date has passed (Philippine time)
---   partial  some of it is paid
---   unpaid   nothing paid yet, not due yet
+-- 025_create_bills_with_variables.sql
+-- Powers the new "Create bills" screen in the Rent ledger:
+--   landlord_bill_preview  lists the tenants who still need this month's bill, with their
+--                          rent, their FIXED charges (read-only) and their VARIABLE charges
+--                          (the landlord types the amounts).
+--   create_monthly_bills   creates those bills: rent + fixed charges + the variable amounts
+--                          that were entered. A variable amount left blank or 0 is skipped.
+-- Who needs a bill is decided exactly like the old Generate bills button: active lease,
+-- already started (advance rent covers the first month), not ended, no bill for that month yet.
 -- Safe to run more than once.
 -- =====================================================================
 
-create or replace function landlord_unpaid_bills(p_property uuid) returns jsonb
+create or replace function landlord_bill_preview(p_property uuid, p_month date default null)
+returns jsonb
 language plpgsql stable security definer set search_path = public as $$
+declare
+  v_period date := date_trunc('month', coalesce(p_month, ph_today()))::date;
 begin
   if not owns_property(p_property) then raise exception 'not_allowed'; end if;
+  if v_period > date_trunc('month', ph_today())::date then raise exception 'future_month'; end if;
 
-  return coalesce((
-    select jsonb_agg(to_jsonb(x) order by x.due_date, x.tenant_name)
-      from (
-        select l.id as lease_id, b.id as bill_id, b.bill_type, b.billing_period, b.due_date,
-               (pr.first_name || ' ' || pr.last_name) as tenant_name,
-               u.label as unit_label,
-               (it.total - b.discount)               as total_due,
-               py.paid,
-               (it.total - b.discount - py.paid)     as balance,
-               case when pend.id is not null            then 'pending'
-                    when b.due_date < ph_today()        then 'overdue'
-                    when py.paid > 0                    then 'partial'
-                    else 'unpaid' end                   as status,
-               greatest(ph_today() - b.due_date, 0)     as days_overdue,
-               case when pend.id is not null then jsonb_build_object(
-                      'payment_id',   pend.id,
-                      'amount',       pend.amount,
-                      'method',       pend.method,
-                      'reference_no', pend.reference_no,
-                      'note',         pend.note,
-                      'planned_date', pend.planned_date,
-                      'receipt_path', pend.receipt_path,
-                      'created_at',   pend.created_at) end as pending
-          from bills b
-          join leases l     on l.id = b.lease_id
-          join units u      on u.id = l.unit_id
-          join profiles pr  on pr.id = l.tenant_id
-          cross join lateral (select coalesce(sum(amount), 0) as total
-                                from bill_items where bill_id = b.id) it
-          cross join lateral (select coalesce(sum(amount), 0) as paid
-                                from payments where bill_id = b.id and status = 'confirmed') py
-          left join lateral (select * from payments
-                              where bill_id = b.id and status = 'pending'
-                              order by created_at desc limit 1) pend on true
-         where u.property_id = p_property
-           and l.status = 'active'
-           and it.total > 0
-           and it.total - b.discount - py.paid > 0
-      ) x
-  ), '[]'::jsonb);
+  return jsonb_build_object(
+    'month', v_period,
+    'bills', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'lease_id',    l.id,
+               'tenant_name', tp.first_name || ' ' || tp.last_name,
+               'unit_label',  u.label,
+               'due_date',    v_period + (t.due_day - 1),
+               'rent',        t.monthly_rent,
+               'fixed', coalesce((
+                   select jsonb_agg(jsonb_build_object(
+                            'charge_id', c.id, 'name', c.name,
+                            'category',  c.category, 'amount', c.fixed_amount) order by c.name)
+                     from lease_charges c
+                    where c.lease_id = l.id and c.active and c.mode = 'fixed'), '[]'::jsonb),
+               'variable', coalesce((
+                   select jsonb_agg(jsonb_build_object(
+                            'charge_id', c.id, 'name', c.name, 'category', c.category) order by c.name)
+                     from lease_charges c
+                    where c.lease_id = l.id and c.active and c.mode = 'variable'), '[]'::jsonb)
+             ) order by u.label)
+        from leases l
+        join units u    on u.id = l.unit_id
+        join profiles tp on tp.id = l.tenant_id
+        join lateral (select monthly_rent, due_day
+                        from lease_terms
+                       where lease_id = l.id and effective_from <= v_period
+                       order by effective_from desc limit 1) t on true
+       where l.status = 'active'
+         and l.tenant_id is not null
+         and u.property_id = p_property
+         and v_period >= (date_trunc('month', l.start_date)
+                          + case when l.advance_rent > 0 then interval '1 month'
+                                 else interval '0 month' end)::date
+         and (l.end_date is null or v_period <= l.end_date)
+         and not exists (select 1 from bills b
+                          where b.lease_id = l.id
+                            and b.bill_type = 'monthly'
+                            and b.billing_period = v_period)
+    ), '[]'::jsonb)
+  );
 end $$;
+
+-- p_entries looks like:
+--   [ { "lease_id": "...", "variables": [ { "charge_id": "...", "amount": 350 }, ... ] }, ... ]
+create or replace function create_monthly_bills(p_property uuid, p_month date, p_entries jsonb default '[]'::jsonb)
+returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  v_period date := date_trunc('month', coalesce(p_month, ph_today()))::date;
+  r        record;
+  c        record;
+  e        jsonb;
+  v        jsonb;
+  v_bill   uuid;
+  v_count  int := 0;
+  v_sort   int;
+  v_amount numeric;
+begin
+  if not owns_property(p_property) then raise exception 'not_allowed'; end if;
+  if v_period > date_trunc('month', ph_today())::date then raise exception 'future_month'; end if;
+
+  for r in
+    select l.id as lease_id, l.tenant_id, l.unit_id, u.property_id, pr.owner_id,
+           t.monthly_rent, t.due_day
+      from leases l
+      join units u       on u.id = l.unit_id
+      join properties pr on pr.id = u.property_id
+      join lateral (select monthly_rent, due_day
+                      from lease_terms
+                     where lease_id = l.id and effective_from <= v_period
+                     order by effective_from desc limit 1) t on true
+     where l.status = 'active'
+       and l.tenant_id is not null
+       and u.property_id = p_property
+       and v_period >= (date_trunc('month', l.start_date)
+                        + case when l.advance_rent > 0 then interval '1 month'
+                               else interval '0 month' end)::date
+       and (l.end_date is null or v_period <= l.end_date)
+       and not exists (select 1 from bills b
+                        where b.lease_id = l.id
+                          and b.bill_type = 'monthly'
+                          and b.billing_period = v_period)
+  loop
+    v_bill := null;
+    insert into bills (lease_id, bill_type, billing_period, due_date, created_by)
+    values (r.lease_id, 'monthly', v_period, v_period + (r.due_day - 1), r.owner_id)
+    on conflict (lease_id, billing_period, bill_type) do nothing
+    returning id into v_bill;
+
+    if v_bill is null then continue; end if;   -- someone else just made it
+
+    insert into bill_items (bill_id, description, category, amount, sort_order)
+    values (v_bill, 'Monthly rent', 'rent', r.monthly_rent, 1);
+
+    -- Fixed charges come straight from the lease (they cannot be changed here)
+    insert into bill_items (bill_id, description, category, amount, sort_order)
+    select v_bill, c2.name, c2.category, c2.fixed_amount,
+           (1 + row_number() over (order by c2.name))::smallint
+      from lease_charges c2
+     where c2.lease_id = r.lease_id and c2.active and c2.mode = 'fixed';
+
+    -- Variable charges: only the amounts the landlord entered for this lease
+    e := null;
+    select elem.value into e
+      from jsonb_array_elements(coalesce(p_entries, '[]'::jsonb)) as elem(value)
+     where elem.value->>'lease_id' = r.lease_id::text
+     limit 1;
+
+    if e is not null then
+      v_sort := 50;
+      for v in select vv.value
+                 from jsonb_array_elements(coalesce(e->'variables', '[]'::jsonb)) as vv(value)
+      loop
+        v_amount := round(coalesce(nullif(v->>'amount', '')::numeric, 0), 2);
+        continue when v_amount <= 0;
+
+        select lc.name, lc.category into c
+          from lease_charges lc
+         where lc.id = (v->>'charge_id')::uuid
+           and lc.lease_id = r.lease_id
+           and lc.active and lc.mode = 'variable';
+
+        if found then
+          insert into bill_items (bill_id, description, category, amount, sort_order)
+          values (v_bill, c.name, c.category, v_amount, v_sort);
+          v_sort := v_sort + 1;
+        end if;
+      end loop;
+    end if;
+
+    insert into notifications (recipient_id, type, title, body, bill_id, unit_id, property_id)
+    values (r.tenant_id, 'bill_issued', 'New bill',
+            'Your bill for ' || to_char(v_period, 'FMMonth YYYY') || ' is ready.',
+            v_bill, r.unit_id, r.property_id);
+
+    v_count := v_count + 1;
+  end loop;
+
+  return v_count;
+end $$;
+
+grant execute on function landlord_bill_preview(uuid, date)        to authenticated;
+grant execute on function create_monthly_bills(uuid, date, jsonb)  to authenticated;
+
+
+-- =====================================================================
+-- 026_edit_lease.sql
+-- Powers the "Edit lease" overlay in Units and invites.
+--
+--   landlord_lease_details(lease)   loads a lease for the form
+--   update_lease(lease, changes)    saves it
+--
+-- What can change, and how:
+--   * Monthly rent and due day: for an ACTIVE lease this adds a new set of terms that applies
+--     from the month you pick (this month or later). Bills that already exist keep their old
+--     amounts, and earlier months are never rewritten. Any change that was scheduled for a
+--     LATER month is replaced by the new one. For a lease still waiting for its tenant,
+--     the first terms are edited directly.
+--   * Charges (water, dues, ...): added, edited or removed. Only bills created from now on use
+--     them. A removed charge is switched off, not deleted.
+--   * End date: optional. No bills are created after it.
+--   * Start date, security deposit and advance rent: only while the tenant has not joined yet
+--     (after that they have already been billed).
+-- Safe to run more than once.
+--
+-- Changes from the first version of this file:
+--   * Start date and end date are saved in ONE statement, so moving the start past the old end
+--     date while setting a new end date no longer fails the date check.
+--   * Renaming a charge to the name of a removed charge no longer fails; the removed one is
+--     renamed out of the way. Charges taken out of the form are switched off first, so a new
+--     charge can reuse their name.
+--   * A rent change scheduled for a later month is now returned as 'scheduled_changes' and is
+--     replaced when you save a new change.
+--   * leases.updated_at is refreshed on every save.
+-- =====================================================================
+
+create or replace function landlord_lease_details(p_lease uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_l     leases;
+  v_prop  uuid;
+  v_terms lease_terms;
+begin
+  select * into v_l from leases where id = p_lease;
+  if not found then raise exception 'not_found'; end if;
+  select property_id into v_prop from units where id = v_l.unit_id;
+  if not owns_property(v_prop) then raise exception 'not_allowed'; end if;
+
+  -- The terms in force today (a lease that has not started yet uses its first terms)
+  select * into v_terms
+    from lease_terms
+   where lease_id = p_lease and (v_l.status = 'pending' or effective_from <= ph_today())
+   order by effective_from desc limit 1;
+  if not found then
+    select * into v_terms from lease_terms where lease_id = p_lease order by effective_from limit 1;
+  end if;
+
+  return jsonb_build_object(
+    'lease_id',         v_l.id,
+    'status',           v_l.status,
+    'unit_label',       (select label from units where id = v_l.unit_id),
+    'tenant_name',      (select first_name || ' ' || last_name from profiles where id = v_l.tenant_id),
+    'start_date',       v_l.start_date,
+    'end_date',         v_l.end_date,
+    'security_deposit', v_l.security_deposit,
+    'advance_rent',     v_l.advance_rent,
+    'monthly_rent',     v_terms.monthly_rent,
+    'due_day',          v_terms.due_day,
+    'has_current_bill', exists (select 1 from bills b
+                                 where b.lease_id = p_lease and b.bill_type = 'monthly'
+                                   and b.billing_period = date_trunc('month', ph_today())::date),
+    -- Changes already scheduled for a later month (active leases only)
+    'scheduled_changes', case when v_l.status = 'active' then coalesce((
+        select jsonb_agg(jsonb_build_object(
+                 'effective_from', t.effective_from, 'monthly_rent', t.monthly_rent,
+                 'due_day', t.due_day, 'change_reason', t.change_reason)
+               order by t.effective_from)
+          from lease_terms t
+         where t.lease_id = p_lease and t.effective_from > ph_today()), '[]'::jsonb)
+      else '[]'::jsonb end,
+    'charges', coalesce((
+        select jsonb_agg(jsonb_build_object(
+                 'id', c.id, 'name', c.name, 'category', c.category,
+                 'mode', c.mode, 'fixed_amount', c.fixed_amount) order by c.name)
+          from lease_charges c where c.lease_id = p_lease and c.active), '[]'::jsonb)
+  );
+end $$;
+
+-- p_changes (every key is optional):
+--   monthly_rent, due_day, effective_from ('YYYY-MM-01'), change_reason,
+--   end_date (null clears it), start_date, security_deposit, advance_rent (pending leases only),
+--   charges: [ { id?, name, category: utility|fee|other, mode: fixed|variable, fixed_amount } ]
+--            Every charge you want to keep must be in the list; active charges left out are switched off.
+create or replace function update_lease(p_lease uuid, p_changes jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_l         leases;
+  v_prop      uuid;
+  v_uid       uuid := auth.uid();
+  v_today     date := ph_today();
+  v_rent      numeric;
+  v_due       int;
+  v_from      date;
+  v_cur_rent  numeric;
+  v_cur_due   int;
+  v_first     uuid;
+  v_new_start date;
+  v_new_end   date;
+  v_keep      uuid[] := '{}';
+  v_id        uuid;
+  ch          jsonb;
+  v_name      text;
+  v_mode      charge_mode;
+  v_cat       charge_category;
+  v_amt       numeric;
+begin
+  select * into v_l from leases where id = p_lease;
+  if not found then raise exception 'not_found'; end if;
+  select property_id into v_prop from units where id = v_l.unit_id;
+  if not owns_property(v_prop) then raise exception 'not_allowed'; end if;
+  if v_l.status not in ('pending', 'active') then raise exception 'lease_closed'; end if;
+
+  -- ---- start date and end date, saved together so the date check sees both new values
+  v_new_start := v_l.start_date;
+  v_new_end   := v_l.end_date;
+
+  if v_l.status = 'pending' and p_changes->'start_date' is not null then
+    v_new_start := nullif(p_changes->>'start_date', '')::date;
+    if v_new_start is null then raise exception 'invalid_start_date'; end if;
+  end if;
+
+  if p_changes->'end_date' is not null then
+    v_new_end := nullif(p_changes->>'end_date', '')::date;   -- null clears it
+  end if;
+
+  if v_new_end is not null and v_new_end < v_new_start then raise exception 'invalid_end_date'; end if;
+
+  if v_new_start is distinct from v_l.start_date or v_new_end is distinct from v_l.end_date then
+    update leases set start_date = v_new_start, end_date = v_new_end where id = p_lease;
+  end if;
+
+  -- ---- deposit, advance and first terms: only before the tenant has joined
+  if v_l.status = 'pending' then
+    if v_new_start is distinct from v_l.start_date then
+      -- the first terms begin in the same month as the lease
+      update lease_terms set effective_from = date_trunc('month', v_new_start)::date
+       where id = (select id from lease_terms where lease_id = p_lease order by effective_from limit 1);
+    end if;
+    if p_changes->'security_deposit' is not null then
+      update leases set security_deposit = greatest(coalesce((p_changes->>'security_deposit')::numeric, 0), 0)
+       where id = p_lease;
+    end if;
+    if p_changes->'advance_rent' is not null then
+      update leases set advance_rent = greatest(coalesce((p_changes->>'advance_rent')::numeric, 0), 0)
+       where id = p_lease;
+    end if;
+  end if;
+
+  -- ---- monthly rent and due day
+  v_rent := nullif(p_changes->>'monthly_rent', '')::numeric;
+  v_due  := nullif(p_changes->>'due_day', '')::int;
+  if v_rent is not null and v_rent < 0 then raise exception 'invalid_rent'; end if;
+  if v_due is not null and v_due not between 1 and 28 then raise exception 'invalid_due_day'; end if;
+
+  if v_rent is not null or v_due is not null then
+    if v_l.status = 'pending' then
+      select id into v_first from lease_terms where lease_id = p_lease order by effective_from limit 1;
+      update lease_terms
+         set monthly_rent = coalesce(v_rent, monthly_rent),
+             due_day      = coalesce(v_due, due_day)::smallint
+       where id = v_first;
+    else
+      v_from := date_trunc('month', coalesce(nullif(p_changes->>'effective_from', '')::date, v_today))::date;
+      if v_from < date_trunc('month', v_today)::date then raise exception 'invalid_effective_from'; end if;
+
+      select monthly_rent, due_day into v_cur_rent, v_cur_due
+        from lease_terms
+       where lease_id = p_lease and effective_from <= v_from
+       order by effective_from desc limit 1;
+      if not found then
+        select monthly_rent, due_day into v_cur_rent, v_cur_due
+          from lease_terms where lease_id = p_lease order by effective_from limit 1;
+      end if;
+
+      if v_cur_rent is distinct from coalesce(v_rent, v_cur_rent)
+         or v_cur_due is distinct from coalesce(v_due, v_cur_due) then
+        -- A change scheduled for a later month is replaced by this one
+        delete from lease_terms where lease_id = p_lease and effective_from > v_from;
+
+        insert into lease_terms (lease_id, effective_from, monthly_rent, due_day, change_reason, created_by)
+        values (p_lease, v_from, coalesce(v_rent, v_cur_rent), coalesce(v_due, v_cur_due),
+                nullif(trim(coalesce(p_changes->>'change_reason', '')), ''), v_uid)
+        on conflict (lease_id, effective_from) do update
+          set monthly_rent  = excluded.monthly_rent,
+              due_day       = excluded.due_day,
+              change_reason = excluded.change_reason,
+              created_by    = excluded.created_by;
+      end if;
+    end if;
+  end if;
+
+  -- ---- charges
+  if p_changes->'charges' is not null then
+    -- 1. Switch off every active charge that is not in the list, first, so that a new or renamed
+    --    charge can reuse its name. They are kept for history.
+    select coalesce(array_agg((cc.value->>'id')::uuid), '{}') into v_keep
+      from jsonb_array_elements(p_changes->'charges') as cc(value)
+     where nullif(cc.value->>'id', '') is not null;
+
+    update lease_charges set active = false
+     where lease_id = p_lease and active and not (id = any(v_keep));
+
+    -- 2. Add, edit or switch back on the charges in the list
+    for ch in select cc.value from jsonb_array_elements(p_changes->'charges') as cc(value) loop
+      v_name := trim(coalesce(ch->>'name', ''));
+      if v_name = '' then raise exception 'invalid_charge'; end if;
+      v_mode := (ch->>'mode')::charge_mode;
+      v_cat  := (ch->>'category')::charge_category;
+      v_amt  := case when v_mode = 'fixed' then nullif(ch->>'fixed_amount', '')::numeric else null end;
+      if v_mode = 'fixed' and (v_amt is null or v_amt < 0) then raise exception 'invalid_charge'; end if;
+
+      if nullif(ch->>'id', '') is not null then
+        v_id := (ch->>'id')::uuid;
+
+        -- A removed charge that already has this name is renamed out of the way
+        update lease_charges
+           set name = name || ' (removed ' || left(id::text, 8) || ')'
+         where lease_id = p_lease and not active and name = v_name and id <> v_id;
+
+        update lease_charges
+           set name = v_name, category = v_cat, mode = v_mode, fixed_amount = v_amt, active = true
+         where id = v_id and lease_id = p_lease;
+        if not found then raise exception 'invalid_charge'; end if;
+      else
+        -- A charge removed earlier with the same name is switched back on
+        insert into lease_charges (lease_id, name, category, mode, fixed_amount, active)
+        values (p_lease, v_name, v_cat, v_mode, v_amt, true)
+        on conflict (lease_id, name) do update
+          set category = excluded.category, mode = excluded.mode,
+              fixed_amount = excluded.fixed_amount, active = true;
+      end if;
+    end loop;
+  end if;
+
+  update leases set updated_at = now() where id = p_lease;
+end $$;
+
+grant execute on function landlord_lease_details(uuid)  to authenticated;
+grant execute on function update_lease(uuid, jsonb)     to authenticated;
+
+
+-- =====================================================================
+-- 027_remove_auto_bill_generation.sql
+-- Bills are now created only from the "Create bills" screen (025), where the landlord types
+-- the variable charges (water, electricity, ...). Any automatic or one-click generator would
+-- create bills without those amounts, so they are removed:
+--
+--   generate_monthly_bills(property, month)   the old "Generate bills" button
+--   generate_all_monthly_bills()              the optional daily schedule
+--   _generate_bills_for_period(period, prop)  the worker both of them used
+--
+-- It also removes the 'aptify-monthly-bills' schedule if it was ever created. Other scheduled
+-- jobs (for example purge-unverified-signups) are not touched.
+-- Safe to run more than once.
+-- =====================================================================
+
+do $$
+begin
+  if exists (select 1 from pg_extension where extname = 'pg_cron') then
+    perform cron.unschedule(jobid)
+       from cron.job
+      where jobname = 'aptify-monthly-bills';
+  end if;
+end $$;
+
+drop function if exists generate_monthly_bills(uuid, date);
+drop function if exists generate_all_monthly_bills();
+drop function if exists _generate_bills_for_period(date, uuid);
+
+
+-- =====================================================================
+-- 028_tenant_home_current_bill.sql
+-- Tenant "My Home" screen.
+--
+--   * current_bill is now THIS MONTH's bill (or a later one), the same rule the Payments page
+--     uses. Before, it was the bill with the earliest due date, so a tenant with an old unpaid
+--     bill saw that one instead of the current one.
+--   * Bills from months that have already ended and still have a balance are not hidden:
+--     unpaid_count and unpaid_total tell the screen how many there are and how much is owed,
+--     so it can link to the Payments page.
+--   * history, requests and announcements return more rows (24 / 30 / 30) because the
+--     cards now scroll instead of cutting the list short.
+-- Safe to run more than once.
+-- =====================================================================
+
+create or replace function tenant_overview() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_lease leases;
+  v_prop  uuid;
+  v_open  jsonb;
+  v_month date := date_trunc('month', now() at time zone 'Asia/Manila')::date;
+begin
+  if auth.uid() is null then raise exception 'not_authenticated'; end if;
+
+  select l.* into v_lease
+    from leases l
+   where l.tenant_id = auth.uid() and l.status = 'active'
+   order by l.created_at desc limit 1;
+
+  if not found then return jsonb_build_object('has_lease', false); end if;
+
+  select u.property_id into v_prop from units u where u.id = v_lease.unit_id;
+
+  -- Every bill that still has a balance, oldest month first. is_past = its month has ended.
+  select coalesce(jsonb_agg(to_jsonb(x) order by x.billing_period, x.due_date), '[]'::jsonb)
+    into v_open
+    from (
+      select b.id as bill_id, b.bill_type, b.billing_period, b.due_date,
+             (it.total - b.discount)           as total_due,
+             py.paid,
+             (it.total - b.discount - py.paid) as balance,
+             case when pend.id is not null then jsonb_build_object(
+                    'payment_id', pend.id, 'amount', pend.amount,
+                    'method', pend.method, 'created_at', pend.created_at) end as pending,
+             case when pend.id is null then (
+                    select jsonb_build_object(
+                             'reason', rj.rejection_reason, 'message', rj.rejection_message,
+                             'amount', rj.amount, 'method', rj.method)
+                      from payments rj
+                     where rj.bill_id = b.id and rj.status = 'rejected'
+                     order by rj.updated_at desc limit 1) end as rejected,
+             (b.billing_period < v_month) as is_past
+        from bills b
+        cross join lateral (select coalesce(sum(amount), 0) as total
+                              from bill_items where bill_id = b.id) it
+        cross join lateral (select coalesce(sum(amount), 0) as paid
+                              from payments where bill_id = b.id and status = 'confirmed') py
+        left join lateral (select * from payments
+                            where bill_id = b.id and status = 'pending'
+                            order by created_at desc limit 1) pend on true
+       where b.lease_id = v_lease.id and (it.total - b.discount - py.paid) > 0
+    ) x;
+
+  return jsonb_build_object(
+    'has_lease', true,
+    'unit_label', (select label from units where id = v_lease.unit_id),
+    'property_name', (select name from properties where id = v_prop),
+
+    -- This month's bill (or a later one) that still has a balance
+    'current_bill', (
+      select e from jsonb_array_elements(v_open) with ordinality t(e, n)
+       where not (e->>'is_past')::boolean
+       order by n limit 1),
+
+    -- Bills from months that have already ended and are still not fully paid
+    'unpaid_count', (select count(*) from jsonb_array_elements(v_open) e
+                      where (e->>'is_past')::boolean),
+    'unpaid_total', (select coalesce(sum((e->>'balance')::numeric), 0)
+                       from jsonb_array_elements(v_open) e
+                      where (e->>'is_past')::boolean),
+
+    'history', coalesce((
+      select jsonb_agg(to_jsonb(h) order by h.created_at desc)
+        from (select pay.id, b.billing_period, b.bill_type, pay.amount, pay.method,
+                     pay.status, pay.created_at
+                from payments pay
+                join bills b on b.id = pay.bill_id
+               where b.lease_id = v_lease.id
+               order by pay.created_at desc
+               limit 24) h), '[]'::jsonb),
+
+    'requests', coalesce((
+      select jsonb_agg(to_jsonb(q) order by q.created_at desc)
+        from (select mr.id, mr.title, mr.category, mr.urgency, mr.status, mr.created_at
+                from maintenance_requests mr
+               where mr.unit_id = v_lease.unit_id and mr.requested_by = auth.uid()
+               order by mr.created_at desc
+               limit 30) q), '[]'::jsonb),
+
+    'announcements', coalesce((
+      select jsonb_agg(to_jsonb(a) order by a.published_at desc)
+        from (select an.id, an.title, an.published_at
+                from announcements an
+               where an.property_id = v_prop
+                 and an.status = 'published'
+                 and (an.audience = 'property'
+                      or exists (select 1 from announcement_units au
+                                  where au.announcement_id = an.id
+                                    and au.unit_id = v_lease.unit_id))
+               order by an.published_at desc
+               limit 30) a), '[]'::jsonb)
+  );
+end $$;
+
+
+-- =====================================================================
+-- 029_rent_reminder_rules.sql
+-- The landlord's "Send reminder" button (Rent ledger, Overview).
+--
+-- send_rent_reminder(bill) now:
+--   * refuses a bill that has nothing left to pay                -> 'nothing_due'
+--   * respects the tenant's "rent reminders" setting             -> 'reminders_off'
+--   * allows ONE reminder per bill every 24 hours                -> 'recently_reminded'
+--   * writes a message with the amount and due date, not a generic line
+-- The tenant sees the reminder in the new Notifications page (bell in the sidebar).
+-- Safe to run more than once.
+-- =====================================================================
+
+create index if not exists notifications_bill_type_created_idx
+  on notifications (bill_id, type, created_at desc);
+
+create or replace function send_rent_reminder(p_bill uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_tenant  uuid;
+  v_unit    uuid;
+  v_prop    uuid;
+  v_due     date;
+  v_period  date;
+  v_balance numeric;
+  v_today   date := (now() at time zone 'Asia/Manila')::date;
+  v_body    text;
+begin
+  if not manages_bill(p_bill) then raise exception 'not_allowed'; end if;
+
+  select l.tenant_id, u.id, u.property_id, b.due_date, b.billing_period,
+         (coalesce((select sum(amount) from bill_items   where bill_id = b.id), 0)
+          - b.discount
+          - coalesce((select sum(amount) from payments where bill_id = b.id and status = 'confirmed'), 0))
+    into v_tenant, v_unit, v_prop, v_due, v_period, v_balance
+    from bills b
+    join leases l on l.id = b.lease_id
+    join units  u on u.id = l.unit_id
+   where b.id = p_bill;
+
+  if v_tenant is null then raise exception 'no_tenant'; end if;
+  if coalesce(v_balance, 0) <= 0 then raise exception 'nothing_due'; end if;
+
+  if exists (select 1 from notification_preferences
+              where user_id = v_tenant and not rent_reminders) then
+    raise exception 'reminders_off';
+  end if;
+
+  if exists (select 1 from notifications
+              where bill_id = p_bill and type = 'rent_reminder'
+                and created_at > now() - interval '24 hours') then
+    raise exception 'recently_reminded';
+  end if;
+
+  v_body := 'Your landlord sent a reminder: PHP ' || to_char(v_balance, 'FM999,999,990.00')
+         || ' for ' || to_char(v_period, 'FMMonth YYYY')
+         || case when v_due < v_today
+                 then ' was due on ' || to_char(v_due, 'FMMonth FMDD, YYYY') || '.'
+                 else ' is due on '  || to_char(v_due, 'FMMonth FMDD, YYYY') || '.' end;
+
+  insert into notifications (recipient_id, type, title, body, bill_id, unit_id, property_id)
+  values (v_tenant, 'rent_reminder', 'Rent reminder', v_body, p_bill, v_unit, v_prop);
+end $$;
+
+grant execute on function send_rent_reminder(uuid) to authenticated;

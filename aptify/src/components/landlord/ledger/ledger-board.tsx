@@ -29,6 +29,7 @@ import { RecordCashDialog } from "./record-cash-dialog";
 import { ReviewPaymentDialog } from "./review-payment-dialog";
 
 type Tab = "all" | "pending" | "overdue";
+type View = "rent" | "unpaid" | "history";
 
 function Stat({
   value,
@@ -559,6 +560,7 @@ export function LedgerBoard({
   unpaidError: string | null;
 }) {
   const [tab, setTab] = useState<Tab>("all");
+  const [view, setView] = useState<View>("rent");
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
 
@@ -577,6 +579,7 @@ export function LedgerBoard({
     (sum, r) => (r.status === "overdue" ? sum + Number(r.balance) : sum),
     0
   );
+  const unpaidTotal = unpaid.reduce((sum, u) => sum + Number(u.balance), 0);
   const expected = Number(data.rent_expected ?? 0);
   const collected = Number(data.rent_collected ?? 0);
   const pendingAmount = Number(data.pending_amount ?? 0);
@@ -614,6 +617,12 @@ export function LedgerBoard({
   );
   const nextReceipt = receiptNo(data.next_receipt_year, data.next_receipt_number);
 
+  const views: { value: View; label: string }[] = [
+    { value: "rent", label: "This month's rent" },
+    { value: "unpaid", label: unpaidError ? "Unpaid bills" : `Unpaid bills (${unpaid.length})` },
+    { value: "history", label: "Payment history" },
+  ];
+
   const tabs: { value: Tab; label: string }[] = [
     { value: "all", label: "All" },
     { value: "pending", label: `Pending (${pendingCount})` },
@@ -648,7 +657,7 @@ export function LedgerBoard({
         </div>
       )}
 
-      <div className="grid gap-5 sm:grid-cols-3">
+      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <Stat
           value={rentValue}
           label="Rent received"
@@ -665,129 +674,175 @@ export function LedgerBoard({
           label="Overdue"
           note={overdueCount > 0 ? `${peso(overdueAmount)} past due` : undefined}
         />
+        <Stat
+          value={unpaidError ? "—" : String(unpaid.length)}
+          label="Unpaid bills"
+          note={
+            !unpaidError && unpaid.length > 0 ? `${peso(unpaidTotal)} still owed` : undefined
+          }
+          title={!unpaidError && unpaid.length > 0 ? formatPeso(unpaidTotal) : undefined}
+        />
       </div>
 
-      {rows.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 rounded-2xl border border-slate-200 bg-white px-6 py-14 text-center">
-          <p className="text-lg font-bold text-slate-900">No tenants yet</p>
-          <p className="text-sm text-slate-500">Tenants appear here once they join a unit.</p>
-          <div className="mt-2">
-            <SiteButton href="/landlord/units/invite">Add tenant</SiteButton>
-          </div>
-        </div>
-      ) : (
-        <section className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-6">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="flex flex-col gap-1">
-              <h2 className="text-xl font-bold text-slate-900">This Month&apos;s Rents</h2>
-              <p className="text-sm text-slate-500">
-                Every tenant&apos;s rent for {month}. Review the payments your tenants have sent.
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {tabs.map((t) => (
-                <button
-                  key={t.value}
-                  type="button"
-                  aria-pressed={tab === t.value}
-                  onClick={() => setTab(t.value)}
-                  className={`cursor-pointer rounded-lg border px-3.5 py-[7px] text-[13px] font-semibold ${
-                    tab === t.value
-                      ? "border-sky-700 bg-sky-700 text-white"
-                      : "border-slate-300 bg-white text-slate-500 hover:bg-slate-50"
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-          </div>
+      {/* Three views under the stats */}
+      <div
+        role="tablist"
+        aria-label="Rent ledger sections"
+        className="flex gap-1 overflow-x-auto border-b border-slate-200"
+      >
+        {views.map((v) => (
+          <button
+            key={v.value}
+            type="button"
+            role="tab"
+            id={`ledger-tab-${v.value}`}
+            aria-selected={view === v.value}
+            aria-controls={`ledger-panel-${v.value}`}
+            onClick={() => setView(v.value)}
+            className={`-mb-px shrink-0 cursor-pointer border-b-2 px-4 py-2.5 text-sm font-semibold transition-colors ${
+              view === v.value
+                ? "border-sky-700 text-sky-700"
+                : "border-transparent text-slate-500 hover:text-slate-900"
+            }`}
+          >
+            {v.label}
+          </button>
+        ))}
+      </div>
 
-          <div className="max-h-[22rem] overflow-auto">
-            <div className="min-w-[960px]">
-              <div
-                className={`${unpaidCols} sticky top-0 z-10 rounded-lg bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-500`}
-              >
-                <span>Tenant</span>
-                <span>Unit</span>
-                <span>Due date</span>
-                <span>Total</span>
-                <span>Paid</span>
-                <span>Balance</span>
-                <span>Status</span>
-                <span />
+      {view === "rent" && (
+        <div role="tabpanel" id="ledger-panel-rent" aria-labelledby="ledger-tab-rent">
+          {rows.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 rounded-2xl border border-slate-200 bg-white px-6 py-14 text-center">
+              <p className="text-lg font-bold text-slate-900">No tenants yet</p>
+              <p className="text-sm text-slate-500">Tenants appear here once they join a unit.</p>
+              <div className="mt-2">
+                <SiteButton href="/landlord/units/invite">Add tenant</SiteButton>
+              </div>
+            </div>
+          ) : (
+            <section className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-6">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex flex-col gap-1">
+                  <h2 className="text-xl font-bold text-slate-900">This Month&apos;s Rents</h2>
+                  <p className="text-sm text-slate-500">
+                    Every tenant&apos;s rent for {month}. Review the payments your tenants have sent.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {tabs.map((t) => (
+                    <button
+                      key={t.value}
+                      type="button"
+                      aria-pressed={tab === t.value}
+                      onClick={() => setTab(t.value)}
+                      className={`cursor-pointer rounded-lg border px-3.5 py-[7px] text-[13px] font-semibold ${
+                        tab === t.value
+                          ? "border-sky-700 bg-sky-700 text-white"
+                          : "border-slate-300 bg-white text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              {shown.length === 0 && (
-                <p className="px-3 py-6 text-sm text-slate-500">Nothing in this list.</p>
-              )}
-
-              {shown.map((r) => {
-                const b = statusBadge(r);
-                const late = r.status === "overdue" ? daysOverdue(r.due_date) : 0;
-                return (
+              <div className="max-h-[22rem] overflow-auto">
+                <div className="min-w-[960px]">
                   <div
-                    key={r.bill_id ?? r.lease_id}
-                    className={`${unpaidCols} border-b border-slate-100 px-3 py-3 text-sm last:border-b-0`}
+                    className={`${unpaidCols} sticky top-0 z-10 rounded-lg bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-500`}
                   >
-                    <span className="truncate font-semibold text-slate-900">{r.tenant_name}</span>
-                    <span className="text-slate-900">{shortLabel(r.unit_label)}</span>
-                    <span className="flex flex-col">
-                      <span className="text-slate-900">
-                        {r.status === "unbilled" ? "—" : numericDate(r.due_date)}
-                      </span>
-                      {late > 0 && (
-                        <span className="text-xs text-slate-500">
-                          {late} day{late === 1 ? "" : "s"} overdue
-                        </span>
-                      )}
-                    </span>
-                    <span className="text-slate-900">
-                      {r.status === "unbilled" ? "—" : formatPeso(Number(r.total_due))}
-                    </span>
-                    <span className="text-slate-900">
-                      {r.status === "unbilled" ? "—" : formatPeso(Number(r.paid))}
-                    </span>
-                    <span className="font-semibold text-slate-900">
-                      {r.status === "unbilled" ? "—" : formatPeso(Number(r.balance))}
-                    </span>
-                    <span className="flex flex-col items-start gap-1">
-                      <span
-                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${b.cls}`}
-                      >
-                        {r.status === "paid" && <Check className="size-3.5" aria-hidden />}
-                        {b.text}
-                      </span>
-                      {r.status === "paid" && r.paid_on && (
-                        <span className="text-xs text-slate-500">on {shortDate(r.paid_on)}</span>
-                      )}
-                    </span>
-                    <span className="flex justify-end gap-2">
-                      {r.status === "pending" && (
-                        <Button type="button" onClick={() => setReviewingId(r.bill_id)}>
-                          Review payment
-                        </Button>
-                      )}
-                      {r.status === "overdue" && (
-                        <RpcButton
-                          label="Send reminder"
-                          doneLabel="Sent"
-                          rpc="send_rent_reminder"
-                          args={{ p_bill: r.bill_id }}
-                        />
-                      )}
-                    </span>
+                    <span>Tenant</span>
+                    <span>Unit</span>
+                    <span>Due date</span>
+                    <span>Total</span>
+                    <span>Paid</span>
+                    <span>Balance</span>
+                    <span>Status</span>
+                    <span />
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        </section>
+
+                  {shown.length === 0 && (
+                    <p className="px-3 py-6 text-sm text-slate-500">Nothing in this list.</p>
+                  )}
+
+                  {shown.map((r) => {
+                    const b = statusBadge(r);
+                    const late = r.status === "overdue" ? daysOverdue(r.due_date) : 0;
+                    return (
+                      <div
+                        key={r.bill_id ?? r.lease_id}
+                        className={`${unpaidCols} border-b border-slate-100 px-3 py-3 text-sm last:border-b-0`}
+                      >
+                        <span className="truncate font-semibold text-slate-900">{r.tenant_name}</span>
+                        <span className="text-slate-900">{shortLabel(r.unit_label)}</span>
+                        <span className="flex flex-col">
+                          <span className="text-slate-900">
+                            {r.status === "unbilled" ? "—" : numericDate(r.due_date)}
+                          </span>
+                          {late > 0 && (
+                            <span className="text-xs text-slate-500">
+                              {late} day{late === 1 ? "" : "s"} overdue
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-slate-900">
+                          {r.status === "unbilled" ? "—" : formatPeso(Number(r.total_due))}
+                        </span>
+                        <span className="text-slate-900">
+                          {r.status === "unbilled" ? "—" : formatPeso(Number(r.paid))}
+                        </span>
+                        <span className="font-semibold text-slate-900">
+                          {r.status === "unbilled" ? "—" : formatPeso(Number(r.balance))}
+                        </span>
+                        <span className="flex flex-col items-start gap-1">
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${b.cls}`}
+                          >
+                            {r.status === "paid" && <Check className="size-3.5" aria-hidden />}
+                            {b.text}
+                          </span>
+                          {r.status === "paid" && r.paid_on && (
+                            <span className="text-xs text-slate-500">on {shortDate(r.paid_on)}</span>
+                          )}
+                        </span>
+                        <span className="flex justify-end gap-2">
+                          {r.status === "pending" && (
+                            <Button type="button" onClick={() => setReviewingId(r.bill_id)}>
+                              Review payment
+                            </Button>
+                          )}
+                          {r.status === "overdue" && (
+                            <RpcButton
+                              label="Send reminder"
+                              doneLabel="Sent"
+                              rpc="send_rent_reminder"
+                              args={{ p_bill: r.bill_id }}
+                            />
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </section>
+          )}
+        </div>
       )}
 
-      <UnpaidBillsTable unpaid={unpaid} error={unpaidError} onReview={setReviewingId} />
+      {view === "unpaid" && (
+        <div role="tabpanel" id="ledger-panel-unpaid" aria-labelledby="ledger-tab-unpaid">
+          <UnpaidBillsTable unpaid={unpaid} error={unpaidError} onReview={setReviewingId} />
+        </div>
+      )}
 
-      <ReceiptsTable receipts={receipts} error={receiptsError} />
+      {view === "history" && (
+        <div role="tabpanel" id="ledger-panel-history" aria-labelledby="ledger-tab-history">
+          <ReceiptsTable receipts={receipts} error={receiptsError} />
+        </div>
+      )}
 
       {reviewing && (
         <ReviewPaymentDialog row={reviewing} onClose={() => setReviewingId(null)} />
