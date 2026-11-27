@@ -10,6 +10,7 @@ import type { RowKind } from "@/lib/units";
 import { DangerDialog } from "@/components/ui/danger-dialog";
 import { removeStorageFiles, type FilePaths } from "@/lib/account";
 import { ConfirmDialog } from "./confirm-dialog";
+import { EditLeaseDialog } from "./edit-lease-dialog";
 
 type Props = {
   kind: RowKind;
@@ -24,7 +25,7 @@ type Props = {
 export function RowActions({ kind, unitId, label, tenantName, leaseId, inviteId, code }: Props) {
   const router = useRouter();
   const toast = useToast();
-  const [dialog, setDialog] = useState<null | "revoke" | "remove">(null);
+  const [dialog, setDialog] = useState<null | "revoke" | "remove" | "edit">(null);
   const [busy, setBusy] = useState(false);
 
   async function run(rpc: string, args: Record<string, string>, okMessage: string) {
@@ -79,14 +80,25 @@ export function RowActions({ kind, unitId, label, tenantName, leaseId, inviteId,
 
   return (
     <>
-      {kind === "occupied" ? (
-        <Button size="sm" variant="outline" onClick={() => setDialog("remove")}>
-          Remove tenant
-        </Button>
-      ) : (
-        <Button size="sm" variant="outline" onClick={() => setDialog("revoke")}>
-          Revoke
-        </Button>
+      <div className="flex items-center gap-2">
+        {leaseId && (
+          <Button size="sm" variant="outline" onClick={() => setDialog("edit")}>
+            Edit lease
+          </Button>
+        )}
+        {kind === "occupied" ? (
+          <Button size="sm" variant="outline" onClick={() => setDialog("remove")}>
+            Remove tenant
+          </Button>
+        ) : (
+          <Button size="sm" variant="outline" onClick={() => setDialog("revoke")}>
+            Revoke
+          </Button>
+        )}
+      </div>
+
+      {dialog === "edit" && leaseId && (
+        <EditLeaseDialog leaseId={leaseId} onClose={() => setDialog(null)} />
       )}
 
       {dialog === "revoke" && inviteId && (

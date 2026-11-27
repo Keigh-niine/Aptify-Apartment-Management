@@ -54,7 +54,7 @@ export function UnitsTable({ rows }: { rows: UnitRow[] }) {
 
   return (
     <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-      <div className="min-w-[1100px]">
+      <div className="min-w-[1200px]">
         <div className={`${cols} border-b border-slate-200 px-6 py-3 text-xs font-semibold text-slate-500`}>
           <span>Unit</span>
           <span>Tenant</span>
