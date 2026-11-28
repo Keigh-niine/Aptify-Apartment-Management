@@ -22,8 +22,8 @@ type Errors = { title?: string; description?: string; photos?: string };
 
 const steps = [
   { done: true, title: "Your landlord receives your request", sub: "You get a confirmation" },
-  { done: false, title: "A technician is assigned", sub: "You see the assignee and date" },
-  { done: false, title: "Marked as resolved", sub: "You can comment or reopen" },
+  { done: false, title: "Staff is assigned", sub: "You see who is coming and when" },
+  { done: false, title: "You mark it as resolved", sub: "Once the repair is done. You can reopen it later" },
 ];
 
 const chip = (on: boolean) =>

@@ -299,7 +299,7 @@ export default async function TenantHomePage() {
           title="Announcements"
           action={
             <Link
-              href="/tenant/announcements"
+              href="/tenant/mail"
               className="text-sm font-semibold text-sky-700 hover:underline"
             >
               View all

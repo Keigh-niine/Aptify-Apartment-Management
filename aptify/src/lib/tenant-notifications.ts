@@ -10,6 +10,9 @@ export const TENANT_NOTIFICATION_TYPES = [
 
 export type TenantNotificationType = (typeof TENANT_NOTIFICATION_TYPES)[number];
 
+// Announcements come from their own list in Mail, so their notification rows are not listed twice
+export const MAIL_NOTIFICATION_TYPES = TENANT_NOTIFICATION_TYPES.filter((t) => t !== "announcement");
+
 export type TenantNotification = {
   id: string;
   type: TenantNotificationType;
@@ -22,27 +25,43 @@ export type TenantNotification = {
   created_at: string;
 };
 
-// Where tapping a notification takes the tenant
-export function notificationHref(n: TenantNotification): string {
+// One row in the Mail inbox: an announcement or a notification
+export type MailItem = {
+  key: string;
+  kind: "announcement" | "notification";
+  id: string; // the announcement's id, or the notification's id
+  sender: string;
+  subject: string;
+  body: string;
+  date: string;
+  unread: boolean;
+  action?: { href: string; label: string }; // button shown when the message is open
+};
+
+// Who the message appears to be from
+export const notificationSender: Record<TenantNotificationType, string> = {
+  rent_reminder: "Landlord",
+  bill_issued: "Billing",
+  payment_received: "Payments",
+  cash_rejected: "Payments",
+  repair_update: "Maintenance",
+  announcement: "Landlord",
+};
+
+// The button shown inside an opened message
+export function notificationAction(n: TenantNotification): { href: string; label: string } | undefined {
   switch (n.type) {
     case "payment_received":
-      return n.payment_id ? `/tenant/payments/receipts/${n.payment_id}` : "/tenant/payments";
+      return n.payment_id
+        ? { href: `/tenant/payments/receipts/${n.payment_id}`, label: "View receipt" }
+        : { href: "/tenant/payments", label: "Go to Payments" };
     case "repair_update":
       return n.maintenance_request_id
-        ? `/tenant/maintenance/${n.maintenance_request_id}`
-        : "/tenant/maintenance";
+        ? { href: `/tenant/maintenance/${n.maintenance_request_id}`, label: "View request" }
+        : { href: "/tenant/maintenance", label: "Go to Maintenance" };
     case "announcement":
-      return "/tenant/announcements";
+      return undefined;
     default: // rent_reminder, bill_issued, cash_rejected
-      return "/tenant/payments";
+      return { href: "/tenant/payments", label: "Go to Payments" };
   }
 }
-
-export const notificationLabel: Record<TenantNotificationType, string> = {
-  rent_reminder: "Reminder",
-  bill_issued: "New bill",
-  payment_received: "Payment",
-  cash_rejected: "Payment",
-  repair_update: "Repair",
-  announcement: "Announcement",
-};

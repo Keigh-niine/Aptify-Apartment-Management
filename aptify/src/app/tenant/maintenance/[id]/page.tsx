@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { LocalTime } from "@/components/tenant/maintenance/local-time";
-import { CommentForm, ReopenButton } from "@/components/tenant/maintenance/request-actions";
+import { CommentForm, ReopenButton, ResolveButton } from "@/components/tenant/maintenance/request-actions";
 import { getTenantContext } from "@/lib/tenant";
 import { cap, statusChip, type Status } from "@/lib/tenant-maintenance";
 
@@ -66,10 +66,10 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
 
   const upcoming: { title: string; sub: string }[] = [];
   if (status === "new") {
-    upcoming.push({ title: "A technician is assigned", sub: "You see the assignee and date" });
+    upcoming.push({ title: "Staff is assigned", sub: "You see who is coming and when" });
   }
   if (status !== "resolved") {
-    upcoming.push({ title: "Resolved", sub: "Waiting for the repair" });
+    upcoming.push({ title: "Resolved", sub: "Tap Mark as resolved once the repair is done" });
   }
 
   const comments = commentsRes.data ?? [];
@@ -94,9 +94,12 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
               />
             </p>
           </div>
-          <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${chip.cls}`}>
-            {chip.text}
-          </span>
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
+            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${chip.cls}`}>
+              {chip.text}
+            </span>
+            {status !== "resolved" && <ResolveButton requestId={req.id} />}
+          </div>
         </div>
       </div>
 
